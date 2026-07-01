@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Notation Poomsae — Ligue de Dakar Taekwondo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-firestore-compat.min.js"></script>
+<style>
+  :root{
+    --navy:#0B1F3A;
+    --navy-deep:#071527;
+    --red:#C8102E;
+    --blue:#0050A0;
+    --gold:#D4AF37;
+    --paper:#F4F2ED;
+    --ink:#1A1A1A;
+    --line:rgba(255,255,255,0.12);
+    --green:#1E8E5A;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--navy-deep);
+    color:var(--paper);
+    font-family:'Segoe UI',Arial,sans-serif;
+    min-height:100vh;
+  }
+  .topbar{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:14px 22px;
+    background:linear-gradient(90deg,var(--navy) 0%, var(--navy-deep) 100%);
+    border-bottom:3px solid var(--gold);
+    flex-wrap:wrap;gap:8px;
+  }
+  .brand{display:flex;align-items:center;gap:12px;}
+  .brand .dot{width:14px;height:14px;border-radius:50%;background:var(--red);box-shadow:0 0 0 4px rgba(200,16,46,0.18);}
+  .brand h1{font-size:15px;margin:0;letter-spacing:.08em;text-transform:uppercase;color:var(--paper);font-weight:700;}
+  .brand small{display:block;color:#9fb0c8;font-size:11px;letter-spacing:.06em;}
+  .pill{font-size:11px;padding:5px 10px;border-radius:20px;border:1px solid var(--line);color:#cdd8e6;letter-spacing:.05em;display:flex;align-items:center;gap:6px;}
+  .pill .dotstatus{width:8px;height:8px;border-radius:50%;background:#7e8aa0;}
+  .pill.online .dotstatus{background:var(--green);box-shadow:0 0 0 3px rgba(30,142,90,0.25);}
+  .pill.offline .dotstatus{background:var(--red);}
+
+  .wrap{max-width:760px;margin:0 auto;padding:28px 18px 60px;}
+
+  /* ---------- SELECTEUR DE ROLE ---------- */
+  .role-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px;}
+  @media(max-width:520px){.role-grid{grid-template-columns:1fr;}}
+  .role-card{
+    background:linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.01));
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:20px;
+    cursor:pointer;
+    transition:.15s;
+  }
+  .role-card:hover{border-color:var(--gold);transform:translateY(-2px);}
+  .role-card .num{font-size:34px;font-weight:800;color:var(--gold);font-family:Georgia,serif;}
+  .role-card .lbl{font-size:13px;letter-spacing:.05em;text-transform:uppercase;color:#cdd8e6;margin-top:6px;}
+  .role-card .sub{font-size:11px;color:#7e8aa0;margin-top:4px;}
+  .admin-card{grid-column:1/-1;background:linear-gradient(160deg,rgba(200,16,46,0.18),rgba(0,80,160,0.12));border:1px solid rgba(212,175,55,0.4);}
+  .admin-card .lbl{color:#fff;font-size:15px;font-weight:700;}
+
+  .section-title{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:#9fb0c8;margin:30px 0 10px;}
+
+  /* ---------- CARTE GENERIQUE ---------- */
+  .card{
+    background:#fff;color:var(--ink);
+    border-radius:14px;padding:22px;
+    box-shadow:0 10px 30px rgba(0,0,0,0.3);
+    margin-bottom:16px;
+  }
+  .backlink{display:inline-flex;align-items:center;gap:6px;color:#9fb0c8;font-size:13px;text-decoration:none;cursor:pointer;margin-bottom:14px;}
+  .backlink:hover{color:var(--gold);}
+
+  label.field-label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#6b7280;margin-bottom:6px;font-weight:700;}
+  input[type=text]{
+    width:100%;padding:10px 12px;border:1px solid #d8dce3;border-radius:8px;font-size:15px;
+  }
+
+  .athlete-banner{
+    background:linear-gradient(135deg,var(--navy),var(--blue));color:#fff;border-radius:12px;
+    padding:14px 18px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;
+  }
+  .athlete-banner .name{font-size:18px;font-weight:800;font-family:Georgia,serif;}
+  .athlete-banner .tag{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#bcd0ec;}
+  .athlete-banner.waiting{background:#eceef1;color:#6b7280;}
+  .athlete-banner.waiting .name{color:#6b7280;font-size:14px;}
+
+  .score-block{border-top:1px solid #eceef1;padding-top:16px;margin-top:16px;}
+  .score-head{display:flex;justify-content:space-between;align-items:baseline;}
+  .score-head h3{margin:0;font-size:15px;}
+  .score-head .max{font-size:12px;color:#9098a3;}
+  .score-value{font-size:30px;font-weight:800;font-family:Georgia,serif;color:var(--navy);margin:8px 0;}
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap;}
+  .btn{
+    border:none;border-radius:8px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer;
+    transition:.12s;
+  }
+  .btn:active{transform:scale(.96);}
+  .btn:disabled{opacity:.4;cursor:not-allowed;}
+  .btn-faute1{background:#fde7ea;color:var(--red);}
+  .btn-faute1:hover{background:#f8c9d0;}
+  .btn-faute3{background:var(--red);color:#fff;}
+  .btn-faute3:hover{background:#a30d24;}
+  .btn-plus{background:#e8f0fb;color:var(--blue);}
+  .btn-plus:hover{background:#cfe0f6;}
+  .btn-minus{background:#eef0f3;color:#4b5563;}
+  .btn-minus:hover{background:#dde1e6;}
+  .btn-reset{background:none;color:#9098a3;text-decoration:underline;padding:6px 0;}
+
+  .total-bar{
+    margin-top:22px;background:var(--navy);color:#fff;border-radius:12px;
+    padding:18px;display:flex;justify-content:space-between;align-items:center;
+  }
+  .total-bar .lab{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#9fb0c8;}
+  .total-bar .num{font-size:36px;font-weight:800;font-family:Georgia,serif;color:var(--gold);}
+
+  .btn-validate{
+    width:100%;margin-top:16px;padding:14px;border-radius:10px;border:none;
+    background:var(--gold);color:var(--navy-deep);font-weight:800;font-size:15px;letter-spacing:.04em;cursor:pointer;
+  }
+  .btn-validate:hover{background:#c79f2e;}
+
+  .validated-banner{
+    background:linear-gradient(135deg,var(--navy),var(--blue));color:#fff;border-radius:14px;
+    padding:34px 22px;text-align:center;
+  }
+  .validated-banner .who{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#bcd0ec;}
+  .validated-banner .score{font-size:64px;font-weight:800;font-family:Georgia,serif;color:var(--gold);margin:10px 0;}
+  .validated-banner .hint{font-size:13px;color:#cdd8e6;}
+  .btn-edit{margin-top:18px;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.3);padding:9px 16px;border-radius:8px;font-size:13px;cursor:pointer;}
+
+  /* ---------- ADMIN / ECRAN CENTRAL ---------- */
+  .athlete-input{display:flex;gap:10px;}
+  .athlete-input input{flex:1;}
+  .btn-new{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;}
+  .btn-new:hover{background:#003d7a;}
+
+  .judges-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;}
+  @media(max-width:520px){.judges-grid{grid-template-columns:1fr;}}
+  .judge-slot{border:1px solid #e3e6ea;border-radius:10px;padding:12px;position:relative;}
+  .judge-slot.is-validated{border-color:var(--green);background:#f3fbf6;}
+  .judge-slot .jt{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#6b7280;font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;}
+  .judge-slot .jt .stat{font-size:10px;font-weight:700;}
+  .judge-slot .jt .stat.wait{color:#c79b1f;}
+  .judge-slot .jt .stat.ok{color:var(--green);}
+  .judge-slot .val{font-size:24px;font-weight:800;color:var(--navy);}
+  .judge-slot .val.pending{color:#c2c8d1;font-size:15px;font-weight:600;}
+
+  .btn-calc{
+    width:100%;margin-top:18px;padding:15px;border-radius:10px;border:none;
+    background:var(--navy);color:#fff;font-weight:800;font-size:15px;letter-spacing:.04em;cursor:pointer;
+  }
+  .btn-calc:hover{background:var(--blue);}
+  .btn-calc:disabled{background:#c2c8d1;cursor:not-allowed;}
+
+  /* ---------- ECRAN DE PROJECTION ---------- */
+  .stage{display:none;}
+  .stage.active{
+    display:flex;position:fixed;inset:0;z-index:50;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;
+    background:radial-gradient(circle at 50% 0%, var(--navy) 0%, var(--navy-deep) 70%);
+  }
+  .stage .league{font-size:16px;letter-spacing:.18em;text-transform:uppercase;color:var(--gold);margin-bottom:6px;}
+  .stage .athlete-name{font-size:42px;font-weight:800;color:#fff;font-family:Georgia,serif;margin-bottom:30px;}
+  .stage .final{font-size:160px;font-weight:800;font-family:Georgia,serif;color:var(--gold);line-height:1;text-shadow:0 0 60px rgba(212,175,55,0.4);}
+  .stage .final-label{font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:#9fb0c8;margin-top:6px;}
+  .stage .breakdown{display:flex;gap:18px;margin-top:40px;flex-wrap:wrap;justify-content:center;}
+  .stage .bd-item{padding:10px 16px;border-radius:10px;font-size:15px;font-weight:700;}
+  .bd-kept{background:rgba(212,175,55,0.15);color:var(--gold);border:1px solid rgba(212,175,55,0.4);}
+  .bd-dropped{background:rgba(255,255,255,0.04);color:#7e8aa0;border:1px solid var(--line);text-decoration:line-through;}
+  .stage .close-stage{position:absolute;top:24px;right:28px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;}
+  .stage .close-stage:hover{background:rgba(255,255,255,0.2);}
+  .stage .waiting{font-size:20px;color:#9fb0c8;}
+
+  .history{margin-top:26px;}
+  .history table{width:100%;border-collapse:collapse;font-size:13px;}
+  .history th{text-align:left;color:#9098a3;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.05em;padding:6px 8px;border-bottom:1px solid #eceef1;}
+  .history td{padding:8px;border-bottom:1px solid #f1f2f4;}
+  .history .empty{color:#9098a3;font-size:13px;padding:14px 0;}
+
+  .footer-note{text-align:center;color:#5d6b85;font-size:12px;margin-top:34px;line-height:1.6;}
+  .config-warning{background:#3a1f1f;border:1px solid var(--red);color:#ffd9dc;border-radius:10px;padding:14px 16px;font-size:13px;margin-bottom:16px;line-height:1.6;}
+  .ping-panel{margin-top:24px;padding:18px;background:#fff;border-radius:14px;border:1px solid #e5e7eb;}
+  .ping-status{margin-top:12px;padding:10px 14px;border-radius:10px;font-size:14px;}
+  .ping-empty{background:#f3f4f6;color:#6b7280;}
+  .ping-fresh{background:#dcfce7;color:#166534;font-weight:700;}
+  .ping-old{background:#fef3c7;color:#92400e;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <div>
+      <h1>Ligue de Dakar Taekwondo</h1>
+      <small>Notation des athlètes — Poomsae</small>
+    </div>
+  </div>
+  <span class="pill" id="topPill"><span class="dotstatus"></span><span id="topPillText">Connexion…</span></span>
+</div>
+
+<div class="wrap" id="app"></div>
+
+<!-- Écran central plein écran pour projection -->
+<div class="stage" id="stage">
+  <button class="close-stage" onclick="closeStage()">Fermer ✕</button>
+  <div class="league">Ligue de Dakar Taekwondo</div>
+  <div id="stageContent"></div>
+</div>
+
+<script>
+/* =========================================================
+   FIREBASE — remplace par la config de ton projet
+========================================================= */
+const firebaseConfig = {
+  apiKey: "AIzaSyAieSjN9o_AqCEu4XxO1iZE1r6u1m3SB3o",
+  authDomain: "juge-poomsae-dakar.firebaseapp.com",
+  projectId: "juge-poomsae-dakar",
+  storageBucket: "juge-poomsae-dakar.firebasestorage.app",
+  messagingSenderId: "781280891215",
+  appId: "1:781280891215:web:c0a6887f7fa7a386c2753a"
+};
+
+let db = null;
+let firebaseReady = false;
+
+function initFirebase(){
+  if(firebaseConfig.apiKey === "REMPLACE_MOI"){
+    document.getElementById('topPillText').textContent = 'Config Firebase manquante';
+    document.getElementById('topPill').classList.add('offline');
+    return;
+  }
+  try{
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    firebaseReady = true;
+    document.getElementById('topPillText').textContent = 'Connexion en cours…';
+    listenSession();
+    listenPing();
+  }catch(e){
+    console.error('Erreur d\'initialisation Firebase :', e);
+    document.getElementById('topPillText').textContent = 'Erreur de connexion';
+    document.getElementById('topPill').classList.add('offline');
+  }
+}
+
+let firstSnapshotReceived = false;
+
+/* =========================================================
+   ETAT GLOBAL
+========================================================= */
+let view = 'home'; // home | judge | admin
+let currentJudge = null; // 1..5
+
+// Etat de session partagé, reflet de Firestore session/current
+let session = {
+  athleteName: '',
+  resetToken: 0,
+  scores: {}, // { j1: {precision,puissance,rythme,expression,total,validated}, ... }
+  final: null // { final, kept, dropped, name }
+};
+let lastSeenResetToken = -1;
+
+const judgeState = {
+  precision: 4.0,
+  faultsLog: [],
+  puissance: 2.0,
+  rythme: 2.0,
+  expression: 2.0,
+  validated: false
+};
+
+function resetJudgeState(){
+  judgeState.precision = 4.0;
+  judgeState.faultsLog = [];
+  judgeState.puissance = 2.0;
+  judgeState.rythme = 2.0;
+  judgeState.expression = 2.0;
+  judgeState.validated = false;
+}
+
+function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+function round1(v){ return Math.round(v*10)/10; }
+function judgeTotal(){
+  return round1(judgeState.precision + judgeState.puissance + judgeState.rythme + judgeState.expression);
+}
+
+/* =========================================================
+   FIRESTORE — session/current (athlète en cours)
+========================================================= */
+function sessionRef(){
+  return db.collection('poomsae').doc('current');
+}
+function historyRef(){
+  return db.collection('poomsae_resultats');
+}
+function pingRef(){
+  return db.collection('poomsae').doc('ping_test');
+}
+
+/* =========================================================
+   TEST DE CONNEXION (diagnostic synchro PC <-> téléphone)
+========================================================= */
+let pingData = null; // { from, sentAt(ms), receivedAt(ms) }
+let pingTickInterval = null;
+
+function deviceGuess(){
+  const ua = navigator.userAgent || '';
+  return /Mobile|Android|iPhone/i.test(ua) ? '📱 Téléphone' : '🖥️ Ordinateur';
+}
+
+function listenPing(){
+  pingRef().onSnapshot(doc => {
+    if(!doc.exists){ pingData = null; render(); return; }
+    const d = doc.data();
+    pingData = {
+      from: d.from || '?',
+      sentAtMs: d.sentAt && d.sentAt.toMillis ? d.sentAt.toMillis() : null
+    };
+    if(view === 'home') render();
+  }, err => {
+    console.error('Erreur Firestore (ping) :', err.code, err.message);
+  });
+  if(!pingTickInterval){
+    pingTickInterval = setInterval(() => { if(view === 'home') render(); }, 1000);
+  }
+}
+
+function sendTestPing(){
+  if(!firebaseReady){ alert("Firebase non connecté — impossible d'envoyer le test."); return; }
+  pingRef().set({
+    from: deviceGuess(),
+    sentAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(err => reportWriteError('sendTestPing', err));
+}
+
+function renderPingPanel(){
+  let body;
+  if(!pingData || !pingData.sentAtMs){
+    body = `<div class="ping-status ping-empty">Aucun signal de test envoyé pour l'instant.</div>`;
+  } else {
+    const secs = Math.max(0, Math.round((Date.now() - pingData.sentAtMs) / 1000));
+    const fresh = secs <= 5;
+    const timeLabel = secs < 60 ? `il y a ${secs}s` : `il y a ${Math.round(secs/60)} min`;
+    body = `<div class="ping-status ${fresh ? 'ping-fresh' : 'ping-old'}">
+      Dernier signal reçu : envoyé depuis <b>${escapeHtml(pingData.from)}</b> — ${timeLabel}
+      ${fresh ? ' ✅ Synchro en direct confirmée' : ''}
+    </div>`;
+  }
+  return `
+    <div class="ping-panel">
+      <div class="section-title" style="margin-top:0;">📡 Test de connexion PC ↔ Téléphone</div>
+      <p style="font-size:13px;color:#6b7280;margin:0 0 10px;">
+        Ouvrez cette page sur le PC et sur le téléphone, cliquez sur le bouton ci-dessous depuis l'un des deux appareils,
+        puis regardez si le signal apparaît immédiatement sur l'autre appareil.
+      </p>
+      <button class="btn-new" onclick="sendTestPing()">Envoyer un signal test depuis cet appareil (${deviceGuess()})</button>
+      ${body}
+    </div>
+  `;
+}
+
+function listenSession(){
+  sessionRef().onSnapshot(doc => {
+    if(!firstSnapshotReceived){
+      firstSnapshotReceived = true;
+      document.getElementById('topPillText').textContent = 'Synchronisé';
+      document.getElementById('topPill').classList.add('online');
+      document.getElementById('topPill').classList.remove('offline');
+    }
+    const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, scores:{}, final:null };
+    session = {
+      athleteName: data.athleteName || '',
+      resetToken: data.resetToken || 0,
+      scores: data.scores || {},
+      final: data.final || null
+    };
+    // Si l'admin a lancé un nouvel athlète, on réinitialise la note locale du juge
+    if(view === 'judge' && session.resetToken !== lastSeenResetToken){
+      lastSeenResetToken = session.resetToken;
+      resetJudgeState();
+    }
+    render();
+  }, err => {
+    console.error('Erreur Firestore (onSnapshot) :', err.code, err.message);
+    document.getElementById('topPillText').textContent = 'Connexion bloquée (' + err.code + ')';
+    document.getElementById('topPill').classList.remove('online');
+    document.getElementById('topPill').classList.add('offline');
+  });
+}
+
+function reportWriteError(label, err){
+  console.error('Erreur Firestore (' + label + ') :', err.code, err.message);
+  document.getElementById('topPillText').textContent = 'Écriture bloquée (' + (err.code || '?') + ')';
+  document.getElementById('topPill').classList.remove('online');
+  document.getElementById('topPill').classList.add('offline');
+  alert("Échec d'enregistrement Firestore [" + label + "]\nCode : " + err.code + "\nMessage : " + err.message + "\n\n→ Vérifie les règles de sécurité Firestore (Firebase Console > Firestore Database > Règles).");
+}
+
+function writeJudgeScore(){
+  if(!firebaseReady) return;
+  const key = 'j' + currentJudge;
+  const update = {};
+  update['scores.' + key] = {
+    precision: judgeState.precision,
+    puissance: judgeState.puissance,
+    rythme: judgeState.rythme,
+    expression: judgeState.expression,
+    total: judgeTotal(),
+    validated: judgeState.validated
+  };
+  sessionRef().set(update, {merge:true})
+    .catch(err => reportWriteError('writeJudgeScore', err));
+}
+
+function startNewAthlete(name){
+  if(!firebaseReady) return;
+  sessionRef().set({
+    athleteName: name,
+    resetToken: (session.resetToken || 0) + 1,
+    scores: {},
+    final: null
+  }, {merge:false})
+    .catch(err => reportWriteError('startNewAthlete', err));
+}
+
+function writeFinal(finalObj){
+  if(!firebaseReady) return;
+  sessionRef().set({ final: finalObj }, {merge:true})
+    .catch(err => reportWriteError('writeFinal-session', err));
+  historyRef().add({
+    name: finalObj.name,
+    final: finalObj.final,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(err => reportWriteError('writeFinal-historique', err));
+}
+
+/* =========================================================
+   RENDU PRINCIPAL
+========================================================= */
+function render(){
+  const app = document.getElementById('app');
+  if(view === 'home'){
+    app.innerHTML = renderHome();
+  } else if(view === 'judge'){
+    app.innerHTML = renderJudge();
+  } else if(view === 'admin'){
+    app.innerHTML = renderAdmin();
+  }
+}
+
+function renderHome(){
+  let cards = '';
+  for(let i=1;i<=5;i++){
+    cards += `<div class="role-card" onclick="goJudge(${i})">
+      <div class="num">J${i}</div>
+      <div class="lbl">Juge ${i}</div>
+      <div class="sub">Synchronisé en direct</div>
+    </div>`;
+  }
+  const warn = firebaseConfig.apiKey === "REMPLACE_MOI" ? `
+    <div class="config-warning">
+      ⚠️ Configuration Firebase non renseignée. Remplace les valeurs <code>REMPLACE_MOI</code> en haut du fichier HTML par la config de ton projet Firebase pour activer la synchronisation entre les appareils.
+    </div>` : '';
+  return `
+    ${warn}
+    <div class="section-title">Cet appareil sera utilisé par</div>
+    <div class="role-grid">
+      ${cards}
+      <div class="role-card admin-card" onclick="goAdmin()">
+        <div class="lbl">🖥️ Admin / Écran central de projection</div>
+      </div>
+    </div>
+    <p class="footer-note">Les notes des 5 juges arrivent automatiquement chez l'admin.<br>
+    L'admin lance un nouvel athlète, et la note finale (moyenne des 3 notes centrales) s'affiche en direct, prête à être projetée.</p>
+    ${renderPingPanel()}
+  `;
+}
+
+function goJudge(n){
+  currentJudge = n;
+  resetJudgeState();
+  lastSeenResetToken = session.resetToken;
+  // si une note existe déjà en base pour ce juge sur l'athlète en cours, on la reprend
+  const existing = session.scores['j'+n];
+  if(existing){
+    judgeState.precision = existing.precision ?? 4.0;
+    judgeState.puissance = existing.puissance ?? 2.0;
+    judgeState.rythme = existing.rythme ?? 2.0;
+    judgeState.expression = existing.expression ?? 2.0;
+    judgeState.validated = existing.validated ?? false;
+  }
+  view = 'judge';
+  render();
+}
+function goAdmin(){
+  athleteNameInput = session.athleteName || '';
+  view = 'admin';
+  render();
+}
+function goHome(){
+  view = 'home';
+  render();
+}
+
+/* =========================================================
+   VUE JUGE
+========================================================= */
+function renderJudge(){
+  const athleteBanner = session.athleteName
+    ? `<div class="athlete-banner"><span class="name">${escapeHtml(session.athleteName)}</span><span class="tag">Athlète en cours</span></div>`
+    : `<div class="athlete-banner waiting"><span class="name">En attente que l'admin lance un athlète…</span></div>`;
+
+  if(judgeState.validated){
+    return `
+      <a class="backlink" onclick="goHome()">← Changer de rôle</a>
+      ${athleteBanner}
+      <div class="validated-banner">
+        <div class="who">Note validée — Juge ${currentJudge}</div>
+        <div class="score">${judgeTotal().toFixed(1)}</div>
+        <div class="hint">Envoyée automatiquement à l'admin.</div>
+        <button class="btn-edit" onclick="unvalidate()">Modifier la note</button>
+      </div>
+    `;
+  }
+
+  return `
+    <a class="backlink" onclick="goHome()">← Changer de rôle</a>
+    ${athleteBanner}
+    <div class="card">
+      <div class="score-block" style="border-top:none;margin-top:0;padding-top:0;">
+        <div class="score-head">
+          <h3>Précision</h3>
+          <span class="max">Départ 4,0 pts</span>
+        </div>
+        <div class="score-value">${judgeState.precision.toFixed(1)}</div>
+        <div class="btnrow">
+          <button class="btn btn-faute1" onclick="faultePrecision(0.1)">−0,1 faute simple</button>
+          <button class="btn btn-faute3" onclick="faultePrecision(0.3)">−0,3 faute grave</button>
+        </div>
+        ${judgeState.faultsLog.length ? `<button class="btn btn-reset" onclick="resetPrecision()">↺ Réinitialiser la précision (${judgeState.faultsLog.length} faute(s))</button>` : ''}
+      </div>
+
+      ${renderPresentationItem('puissance','Puissance et énergie')}
+      ${renderPresentationItem('rythme','Rythme et tempo')}
+      ${renderPresentationItem('expression',"Expression de l'énergie")}
+
+      <div class="total-bar">
+        <span class="lab">Total juge ${currentJudge}</span>
+        <span class="num">${judgeTotal().toFixed(1)} / 10</span>
+      </div>
+
+      <button class="btn-validate" onclick="validateJudge()">Valider la note</button>
+    </div>
+  `;
+}
+
+function renderPresentationItem(key,label){
+  const val = judgeState[key];
+  return `
+    <div class="score-block">
+      <div class="score-head">
+        <h3>${label}</h3>
+        <span class="max">Max 2,0 pts</span>
+      </div>
+      <div class="score-value">${val.toFixed(1)}</div>
+      <div class="btnrow">
+        <button class="btn btn-faute1" onclick="adjustPresentation('${key}',-0.1)">−0,1</button>
+        <button class="btn btn-faute3" onclick="adjustPresentation('${key}',-0.3)">−0,3</button>
+        <button class="btn btn-plus" onclick="adjustPresentation('${key}',0.1)">+0,1</button>
+        <button class="btn btn-minus" onclick="adjustPresentation('${key}',2.0 - val)" title="Remettre à 2,0">↺ 2,0</button>
+      </div>
+    </div>
+  `;
+}
+
+function faultePrecision(amount){
+  judgeState.precision = clamp(round1(judgeState.precision - amount), 0, 4.0);
+  judgeState.faultsLog.push(amount);
+  writeJudgeScore();
+  render();
+}
+function resetPrecision(){
+  judgeState.precision = 4.0;
+  judgeState.faultsLog = [];
+  writeJudgeScore();
+  render();
+}
+function adjustPresentation(key, delta){
+  judgeState[key] = clamp(round1(judgeState[key] + delta), 0, 2.0);
+  writeJudgeScore();
+  render();
+}
+function validateJudge(){
+  judgeState.validated = true;
+  writeJudgeScore();
+  render();
+}
+function unvalidate(){
+  judgeState.validated = false;
+  writeJudgeScore();
+  render();
+}
+
+/* =========================================================
+   VUE ADMIN
+========================================================= */
+let athleteNameInput = '';
+let history = [];
+let historyUnsub = null;
+
+function listenHistory(){
+  if(historyUnsub) return;
+  historyUnsub = historyRef().orderBy('createdAt','desc').limit(20).onSnapshot(snap => {
+    history = snap.docs.map(d => d.data());
+    if(view === 'admin') render();
+  });
+}
+
+function renderAdmin(){
+  listenHistory();
+
+  const scores = session.scores || {};
+  let slots = '';
+  let validatedCount = 0;
+  for(let i=1;i<=5;i++){
+    const s = scores['j'+i];
+    const isValidated = s && s.validated;
+    if(isValidated) validatedCount++;
+    slots += `
+      <div class="judge-slot ${isValidated ? 'is-validated' : ''}">
+        <div class="jt">Juge ${i} ${s ? `<span class="stat ${isValidated?'ok':'wait'}">${isValidated?'✓ validé':'en cours…'}</span>` : `<span class="stat wait">en attente</span>`}</div>
+        <div class="val ${s ? '' : 'pending'}">${s ? s.total.toFixed(1) : '—'}</div>
+      </div>
+    `;
+  }
+
+  let resultBlock = '';
+  if(session.final){
+    resultBlock = `
+      <div class="total-bar" style="margin-top:24px;">
+        <span class="lab">Note finale — ${escapeHtml(session.final.name || 'Athlète')}</span>
+        <span class="num">${session.final.final.toFixed(1)}</span>
+      </div>
+      <p class="footer-note" style="margin-top:10px;">
+        Conservées : ${session.final.kept.map(v=>v.toFixed(1)).join(' · ')} &nbsp;|&nbsp;
+        Écartées (min/max) : ${session.final.dropped.map(v=>v.toFixed(1)).join(' · ')}
+      </p>
+      <button class="btn-calc" style="background:var(--gold);color:var(--navy-deep);margin-top:6px;" onclick="openStage()">🖥️ Afficher à l'écran central</button>
+    `;
+  }
+
+  let historyRows = history.map((h,idx) => `
+    <tr>
+      <td>${idx+1}</td>
+      <td>${escapeHtml(h.name || '—')}</td>
+      <td>${(h.final ?? 0).toFixed(1)}</td>
+    </tr>
+  `).join('');
+
+  return `
+    <a class="backlink" onclick="goHome()">← Changer de rôle</a>
+    <div class="card">
+      <label class="field-label">Nom de l'athlète en cours</label>
+      <div class="athlete-input">
+        <input type="text" placeholder="Ex : Awa Diop" value="${escapeHtml(athleteNameInput)}" oninput="athleteNameInput=this.value">
+        <button class="btn-new" onclick="launchNewAthlete()">Nouvel athlète</button>
+      </div>
+
+      <div class="section-title" style="margin-top:24px;color:#9098a3;">Notes des 5 juges — reçues en direct (${validatedCount}/5 validées)</div>
+      <div class="judges-grid">${slots}</div>
+
+      <button class="btn-calc" ${validatedCount < 5 ? 'disabled' : ''} onclick="calculateFinal()">
+        ${validatedCount < 5 ? `En attente des juges (${validatedCount}/5)` : 'Calculer la note finale'}
+      </button>
+
+      ${resultBlock}
+    </div>
+
+    <div class="card history">
+      <div class="section-title" style="margin-top:0;">Historique (synchronisé)</div>
+      ${history.length === 0 ? "<div class=\"empty\">Aucun athlète noté pour l'instant.</div>" : `
+        <table>
+          <tr><th>#</th><th>Athlète</th><th>Note finale</th></tr>
+          ${historyRows}
+        </table>
+      `}
+    </div>
+  `;
+}
+
+function launchNewAthlete(){
+  const name = (athleteNameInput || '').trim();
+  if(!name){
+    alert("Merci d'indiquer le nom de l'athlète.");
+    return;
+  }
+  startNewAthlete(name);
+}
+
+function calculateFinal(){
+  const scores = session.scores || {};
+  const valid = [1,2,3,4,5].map(i => scores['j'+i]).filter(s => s && s.validated).map(s => s.total);
+  if(valid.length < 5){
+    alert('Les 5 juges doivent valider leur note avant le calcul final.');
+    return;
+  }
+  const sorted = [...valid].sort((a,b)=>a-b);
+  const dropped = [sorted[0], sorted[sorted.length-1]];
+  const kept = sorted.slice(1, sorted.length-1);
+  const final = round1(kept.reduce((a,b)=>a+b,0) / kept.length);
+
+  writeFinal({ name: session.athleteName, final, kept, dropped });
+}
+
+function openStage(){
+  if(!session.final) return;
+  const f = session.final;
+  document.getElementById('stageContent').innerHTML = `
+    <div class="athlete-name">${escapeHtml(f.name || 'Athlète')}</div>
+    <div class="final">${f.final.toFixed(1)}</div>
+    <div class="final-label">Note finale</div>
+    <div class="breakdown">
+      ${f.kept.map(v => `<span class="bd-item bd-kept">${v.toFixed(1)}</span>`).join('')}
+      ${f.dropped.map(v => `<span class="bd-item bd-dropped">${v.toFixed(1)}</span>`).join('')}
+    </div>
+  `;
+  document.getElementById('stage').classList.add('active');
+}
+function closeStage(){
+  document.getElementById('stage').classList.remove('active');
+}
+
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+initFirebase();
+render();
+</script>
+</body>
+</html>
