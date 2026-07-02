@@ -227,6 +227,7 @@ const firebaseConfig = {
 
 let db = null;
 let firebaseReady = false;
+let lastFirestoreError = null; // message affiché en clair à l'écran (au lieu de dépendre d'une alerte)
 
 function initFirebase(){
   if(firebaseConfig.apiKey === "REMPLACE_MOI"){
@@ -324,6 +325,8 @@ function listenPing(){
     if(view === 'home') render();
   }, err => {
     console.error('Erreur Firestore (ping) :', err.code, err.message);
+    lastFirestoreError = 'Lecture du signal test bloquée : ' + err.code + ' — ' + err.message;
+    if(view === 'home') render();
   });
   if(!pingTickInterval){
     pingTickInterval = setInterval(() => { if(view === 'home') render(); }, 1000);
@@ -335,6 +338,9 @@ function sendTestPing(){
   pingRef().set({
     from: deviceGuess(),
     sentAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).then(() => {
+    lastFirestoreError = null;
+    if(view === 'home') render();
   }).catch(err => reportWriteError('sendTestPing', err));
 }
 
@@ -383,6 +389,7 @@ function listenSession(){
     if(view === 'judge' && session.resetToken !== lastSeenResetToken){
       lastSeenResetToken = session.resetToken;
       resetJudgeState();
+      writeJudgeScore();
     }
     render();
   }, err => {
@@ -390,6 +397,8 @@ function listenSession(){
     document.getElementById('topPillText').textContent = 'Connexion bloquée (' + err.code + ')';
     document.getElementById('topPill').classList.remove('online');
     document.getElementById('topPill').classList.add('offline');
+    lastFirestoreError = 'Lecture de la session bloquée : ' + err.code + ' — ' + err.message;
+    render();
   });
 }
 
@@ -398,6 +407,8 @@ function reportWriteError(label, err){
   document.getElementById('topPillText').textContent = 'Écriture bloquée (' + (err.code || '?') + ')';
   document.getElementById('topPill').classList.remove('online');
   document.getElementById('topPill').classList.add('offline');
+  lastFirestoreError = 'Échec d\'enregistrement [' + label + '] : ' + (err.code || '?') + ' — ' + (err.message || '');
+  render();
   alert("Échec d'enregistrement Firestore [" + label + "]\nCode : " + err.code + "\nMessage : " + err.message + "\n\n→ Vérifie les règles de sécurité Firestore (Firebase Console > Firestore Database > Règles).");
 }
 
@@ -466,8 +477,14 @@ function renderHome(){
     <div class="config-warning">
       ⚠️ Configuration Firebase non renseignée. Remplace les valeurs <code>REMPLACE_MOI</code> en haut du fichier HTML par la config de ton projet Firebase pour activer la synchronisation entre les appareils.
     </div>` : '';
+  const errBanner = lastFirestoreError ? `
+    <div class="config-warning" style="background:#7a1a1a;color:#fff;border-color:#c0392b;">
+      🚫 ${escapeHtml(lastFirestoreError)}<br>
+      → Ouvre la console Firebase de ton projet <b>${escapeHtml(firebaseConfig.projectId)}</b> → Firestore Database → onglet <b>Règles</b>, et vérifie qu'elles autorisent la lecture/écriture sur toute la collection <code>poomsae</code> (pas seulement le document <code>current</code>).
+    </div>` : '';
   return `
     ${warn}
+    ${errBanner}
     <div class="section-title">Cet appareil sera utilisé par</div>
     <div class="role-grid">
       ${cards}
@@ -496,6 +513,9 @@ function goJudge(n){
   }
   view = 'judge';
   render();
+  // Envoie immédiatement la note (même par défaut) pour que l'admin voie
+  // "en cours..." dès que le juge ouvre son écran, sans attendre un clic.
+  writeJudgeScore();
 }
 function goAdmin(){
   athleteNameInput = session.athleteName || '';
