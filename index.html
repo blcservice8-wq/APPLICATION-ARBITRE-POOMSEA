@@ -299,12 +299,12 @@ function renderLogin(){
       <p style="font-size:13px;color:#6b7280;text-align:center;margin:0 0 18px;">Ligue de Dakar Taekwondo — Notation Poomsae</p>
       ${loginError ? `<div class="config-warning" style="background:#fdeaea;color:#a12626;border-color:#f3b7bd;">${escapeHtml(loginError)}</div>` : ''}
       <label class="field-label">Identifiant</label>
-      <input type="text" autocapitalize="off" value="${escapeHtml(loginUsernameInput)}"
+      <input type="text" id="loginUsernameField" autocapitalize="off" value="${escapeHtml(loginUsernameInput)}"
         oninput="loginUsernameInput=this.value"
         onkeydown="if(event.key==='Enter')attemptLogin()"
         style="margin-bottom:12px;">
       <label class="field-label">Mot de passe</label>
-      <input type="password" value="${escapeHtml(loginPasswordInput)}"
+      <input type="password" id="loginPasswordField" value="${escapeHtml(loginPasswordInput)}"
         oninput="loginPasswordInput=this.value"
         onkeydown="if(event.key==='Enter')attemptLogin()"
         style="margin-bottom:16px;">
@@ -774,6 +774,18 @@ function writeFinal(finalObj){
 ========================================================= */
 function render(){
   const app = document.getElementById('app');
+
+  // Préserve le champ en cours de saisie (id, position du curseur) à travers le rafraîchissement,
+  // pour que les mises à jour périodiques (Firestore, sondage de secours) n'interrompent jamais
+  // la frappe sur "Identifiant", "Mot de passe" ou "Nom de l'athlète".
+  const active = document.activeElement;
+  let focusId = null, selStart = null, selEnd = null;
+  if(active && app.contains(active) && active.id && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')){
+    focusId = active.id;
+    selStart = active.selectionStart;
+    selEnd = active.selectionEnd;
+  }
+
   if(view === 'login'){
     app.innerHTML = renderLogin();
   } else if(view === 'home'){
@@ -782,6 +794,16 @@ function render(){
     app.innerHTML = renderJudge();
   } else if(view === 'admin'){
     app.innerHTML = renderAdmin();
+  }
+
+  if(focusId){
+    const el = document.getElementById(focusId);
+    if(el){
+      el.focus();
+      if(typeof selStart === 'number' && el.setSelectionRange){
+        try{ el.setSelectionRange(selStart, selEnd); }catch(e){}
+      }
+    }
   }
 }
 
@@ -1031,7 +1053,7 @@ function renderAdmin(){
       </div>
       <label class="field-label">Nom de l'athlète en cours</label>
       <div class="athlete-input">
-        <input type="text" placeholder="Ex : Awa Diop" value="${escapeHtml(athleteNameInput)}" oninput="athleteNameInput=this.value">
+        <input type="text" id="athleteNameField" placeholder="Ex : Awa Diop" value="${escapeHtml(athleteNameInput)}" oninput="athleteNameInput=this.value">
         <button class="btn-new" onclick="launchNewAthlete()">Nouvel athlète</button>
       </div>
 
