@@ -123,6 +123,19 @@
   }
   .btn-validate:hover{background:#c79f2e;}
 
+  .btn-send{
+    width:100%;margin-top:10px;padding:13px;border-radius:10px;border:2px solid var(--blue);
+    background:#fff;color:var(--blue);font-weight:800;font-size:14px;letter-spacing:.03em;cursor:pointer;
+  }
+  .btn-send:hover{background:var(--blue);color:#fff;}
+  .send-status{
+    margin-top:14px;padding:8px 10px;border-radius:8px;font-size:12.5px;font-weight:700;
+    text-align:center;letter-spacing:.02em;
+  }
+  .send-status.ok{background:#e4f6ea;color:#1a7a3c;}
+  .send-status.sending{background:#fff3cd;color:#8a6d00;}
+  .send-status.pending{background:#fdeaea;color:#a12626;}
+
   .validated-banner{
     background:linear-gradient(135deg,var(--navy),var(--blue));color:#fff;border-radius:14px;
     padding:34px 22px;text-align:center;
@@ -248,6 +261,7 @@ function initFirebase(){
     firebaseReady = true;
     document.getElementById('topPillText').textContent = 'Connexion en cours…';
     listenSession();
+    listenNotes();
     listenPing();
     startPollingFallback();
   }catch(e){
@@ -306,6 +320,12 @@ function sessionRef(){
 }
 function historyRef(){
   return db.collection('poomsae_resultats');
+}
+// Chaque juge a désormais SON PROPRE document indépendant (poomsae/current/notes/j1..j5).
+// Ainsi, l'écriture d'un juge ne dépend jamais d'une écriture concurrente d'un autre juge
+// sur un même champ partagé.
+function notesRef(){
+  return sessionRef().collection('notes');
 }
 function pingRef(){
   return db.collection('poomsae').doc('ping_test');
@@ -386,14 +406,32 @@ function listenSession(){
       document.getElementById('topPill').classList.add('online');
       document.getElementById('topPill').classList.remove('offline');
     }
-    const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, scores:{}, final:null };
+    const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, final:null };
+    debugInfo.lastSessionReadAt = new Date();
     applySessionData(data);
   }, err => {
-    console.error('Erreur Firestore (onSnapshot) :', err.code, err.message);
+    console.error('Erreur Firestore (onSnapshot session) :', err.code, err.message);
     document.getElementById('topPillText').textContent = 'Connexion bloquée (' + err.code + ')';
     document.getElementById('topPill').classList.remove('online');
     document.getElementById('topPill').classList.add('offline');
     lastFirestoreError = 'Lecture de la session bloquée : ' + err.code + ' — ' + err.message;
+    debugInfo.lastError = lastFirestoreError;
+    render();
+  });
+}
+
+function listenNotes(){
+  notesRef().onSnapshot(qs => {
+    const scores = {};
+    qs.forEach(d => { scores[d.id] = d.data(); });
+    session.scores = scores;
+    debugInfo.lastNotesReadAt = new Date();
+    debugInfo.notesSource = 'temps réel (onSnapshot)';
+    render();
+  }, err => {
+    console.error('Erreur Firestore (onSnapshot notes) :', err.code, err.message);
+    lastFirestoreError = 'Lecture des notes bloquée : ' + err.code + ' — ' + err.message;
+    debugInfo.lastError = lastFirestoreError;
     render();
   });
 }
@@ -407,14 +445,17 @@ function listenSession(){
 ========================================================= */
 let pollingInterval = null;
 let isRefreshing = false;
+let debugInfo = {
+  lastSessionReadAt: null,
+  lastNotesReadAt: null,
+  notesSource: '—',
+  lastError: null
+};
 
 function applySessionData(data){
-  session = {
-    athleteName: data.athleteName || '',
-    resetToken: data.resetToken || 0,
-    scores: data.scores || {},
-    final: data.final || null
-  };
+  session.athleteName = data.athleteName || '';
+  session.resetToken = data.resetToken || 0;
+  session.final = data.final || null;
   if(view === 'judge' && session.resetToken !== lastSeenResetToken){
     lastSeenResetToken = session.resetToken;
     resetJudgeState();
@@ -428,10 +469,21 @@ function startPollingFallback(){
   pollingInterval = setInterval(() => {
     if(!firebaseReady) return;
     sessionRef().get({source:'server'}).then(doc => {
-      const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, scores:{}, final:null };
+      const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, final:null };
+      debugInfo.lastSessionReadAt = new Date();
       applySessionData(data);
     }).catch(err => {
-      console.warn('Relecture périodique impossible (réseau ?) :', err.code, err.message);
+      console.warn('Relecture périodique (session) impossible :', err.code, err.message);
+    });
+    notesRef().get({source:'server'}).then(qs => {
+      const scores = {};
+      qs.forEach(d => { scores[d.id] = d.data(); });
+      session.scores = scores;
+      debugInfo.lastNotesReadAt = new Date();
+      debugInfo.notesSource = 'sondage de secours (toutes les 3s)';
+      render();
+    }).catch(err => {
+      console.warn('Relecture périodique (notes) impossible :', err.code, err.message);
     });
   }, 3000);
 }
@@ -439,11 +491,22 @@ function startPollingFallback(){
 function manualRefresh(){
   if(!firebaseReady || isRefreshing) return;
   isRefreshing = true;
-  sessionRef().get({source:'server'}).then(doc => {
-    const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, scores:{}, final:null };
-    applySessionData(data);
-  }).catch(err => reportWriteError('manualRefresh', err))
-    .finally(() => { isRefreshing = false; });
+  Promise.all([
+    sessionRef().get({source:'server'}).then(doc => {
+      const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, final:null };
+      debugInfo.lastSessionReadAt = new Date();
+      applySessionData(data);
+    }),
+    notesRef().get({source:'server'}).then(qs => {
+      const scores = {};
+      qs.forEach(d => { scores[d.id] = d.data(); });
+      session.scores = scores;
+      debugInfo.lastNotesReadAt = new Date();
+      debugInfo.notesSource = 'rafraîchissement manuel';
+      render();
+    })
+  ]).catch(err => reportWriteError('manualRefresh', err))
+    .finally(() => { isRefreshing = false; render(); });
 }
 
 function reportWriteError(label, err){
@@ -456,31 +519,54 @@ function reportWriteError(label, err){
   alert("Échec d'enregistrement Firestore [" + label + "]\nCode : " + err.code + "\nMessage : " + err.message + "\n\n→ Vérifie les règles de sécurité Firestore (Firebase Console > Firestore Database > Règles).");
 }
 
+let lastNoteSentAt = null;
+let isSendingNote = false;
+
 function writeJudgeScore(){
-  if(!firebaseReady) return;
-  const key = 'j' + currentJudge;
-  const update = {};
-  update['scores.' + key] = {
+  if(!firebaseReady || !currentJudge) return Promise.resolve();
+  isSendingNote = true;
+  const payload = {
     precision: judgeState.precision,
     puissance: judgeState.puissance,
     rythme: judgeState.rythme,
     expression: judgeState.expression,
     total: judgeTotal(),
-    validated: judgeState.validated
+    validated: judgeState.validated,
+    resetToken: session.resetToken,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   };
-  sessionRef().set(update, {merge:true})
-    .catch(err => reportWriteError('writeJudgeScore', err));
+  return notesRef().doc('j' + currentJudge).set(payload, {merge:true})
+    .then(() => {
+      lastNoteSentAt = new Date();
+      isSendingNote = false;
+      render();
+    })
+    .catch(err => {
+      isSendingNote = false;
+      reportWriteError('writeJudgeScore', err);
+    });
+}
+
+// Envoi manuel explicite, déclenché par le bouton "📤 Envoyer la note" côté juge.
+function sendNoteManually(){
+  writeJudgeScore();
+  render();
 }
 
 function startNewAthlete(name){
   if(!firebaseReady) return;
-  sessionRef().set({
-    athleteName: name,
-    resetToken: (session.resetToken || 0) + 1,
-    scores: {},
-    final: null
-  }, {merge:false})
-    .catch(err => reportWriteError('startNewAthlete', err));
+  const newResetToken = (session.resetToken || 0) + 1;
+  // On supprime les anciennes notes des juges (documents indépendants) avant de démarrer
+  // un nouvel athlète, sinon les anciennes notes resteraient visibles.
+  const deletions = [1,2,3,4,5].map(i => notesRef().doc('j'+i).delete().catch(()=>{}));
+  Promise.all(deletions).then(() => {
+    sessionRef().set({
+      athleteName: name,
+      resetToken: newResetToken,
+      final: null
+    }, {merge:false})
+      .catch(err => reportWriteError('startNewAthlete', err));
+  });
 }
 
 function writeFinal(finalObj){
@@ -546,6 +632,8 @@ function goJudge(n){
   currentJudge = n;
   resetJudgeState();
   lastSeenResetToken = session.resetToken;
+  lastNoteSentAt = null;
+  isSendingNote = false;
   // si une note existe déjà en base pour ce juge sur l'athlète en cours, on la reprend
   const existing = session.scores['j'+n];
   if(existing){
@@ -579,6 +667,12 @@ function renderJudge(){
     ? `<div class="athlete-banner"><span class="name">${escapeHtml(session.athleteName)}</span><span class="tag">Athlète en cours</span></div>`
     : `<div class="athlete-banner waiting"><span class="name">En attente que l'admin lance un athlète…</span></div>`;
 
+  const sendStatus = isSendingNote
+    ? `<div class="send-status sending">⏳ Envoi en cours…</div>`
+    : (lastNoteSentAt
+        ? `<div class="send-status ok">✅ Envoyée à ${lastNoteSentAt.toLocaleTimeString('fr-FR')}</div>`
+        : `<div class="send-status pending">⚠️ Pas encore envoyée</div>`);
+
   if(judgeState.validated){
     return `
       <a class="backlink" onclick="goHome()">← Changer de rôle</a>
@@ -587,6 +681,8 @@ function renderJudge(){
         <div class="who">Note validée — Juge ${currentJudge}</div>
         <div class="score">${judgeTotal().toFixed(1)}</div>
         <div class="hint">Envoyée automatiquement à l'admin.</div>
+        ${sendStatus}
+        <button class="btn-send" onclick="sendNoteManually()">📤 Envoyer la note</button>
         <button class="btn-edit" onclick="unvalidate()">Modifier la note</button>
       </div>
     `;
@@ -618,6 +714,8 @@ function renderJudge(){
         <span class="num">${judgeTotal().toFixed(1)} / 10</span>
       </div>
 
+      ${sendStatus}
+      <button class="btn-send" onclick="sendNoteManually()">📤 Envoyer la note</button>
       <button class="btn-validate" onclick="validateJudge()">Valider la note</button>
     </div>
   `;
@@ -757,7 +855,59 @@ function renderAdmin(){
         </table>
       `}
     </div>
+
+    ${renderDebugPanel()}
   `;
+}
+
+function renderDebugPanel(){
+  const fmt = d => d ? d.toLocaleTimeString('fr-FR') : 'jamais';
+  const rawScores = JSON.stringify(session.scores || {}, null, 2);
+  const report = [
+    'RAPPORT DE DIAGNOSTIC — Poomsae Dakar',
+    'Heure : ' + new Date().toLocaleString('fr-FR'),
+    'Firebase prêt : ' + firebaseReady,
+    'Dernière lecture session (athlète/reset) : ' + fmt(debugInfo.lastSessionReadAt),
+    'Dernière lecture des notes : ' + fmt(debugInfo.lastNotesReadAt) + ' (source : ' + debugInfo.notesSource + ')',
+    'Dernière erreur : ' + (debugInfo.lastError || 'aucune'),
+    'resetToken actuel : ' + session.resetToken,
+    'Contenu brut des notes :',
+    rawScores
+  ].join('\n');
+
+  return `
+    <div class="card" style="margin-top:16px;">
+      <div class="section-title" style="margin-top:0;color:#9098a3;">🔧 Diagnostic (à partager en cas de problème)</div>
+      <p class="footer-note" style="margin:0 0 10px 0;">
+        Firebase prêt : <b>${firebaseReady ? 'oui' : 'non'}</b> &nbsp;|&nbsp;
+        Lecture session : <b>${fmt(debugInfo.lastSessionReadAt)}</b> &nbsp;|&nbsp;
+        Lecture notes : <b>${fmt(debugInfo.lastNotesReadAt)}</b> (${debugInfo.notesSource})<br>
+        Dernière erreur : <b style="color:${debugInfo.lastError ? '#c0392b' : '#1a7a3c'}">${debugInfo.lastError ? escapeHtml(debugInfo.lastError) : 'aucune'}</b>
+      </p>
+      <button class="btn btn-plus" onclick="copyDebugReport()">📋 Copier le rapport de diagnostic</button>
+      <pre style="background:#0f1622;color:#9fe6a0;font-size:11px;padding:10px;border-radius:8px;margin-top:10px;max-height:180px;overflow:auto;white-space:pre-wrap;">${escapeHtml(rawScores)}</pre>
+    </div>
+  `;
+}
+
+function copyDebugReport(){
+  const fmt = d => d ? d.toLocaleTimeString('fr-FR') : 'jamais';
+  const report = [
+    'RAPPORT DE DIAGNOSTIC — Poomsae Dakar',
+    'Heure : ' + new Date().toLocaleString('fr-FR'),
+    'Firebase prêt : ' + firebaseReady,
+    'Dernière lecture session (athlète/reset) : ' + fmt(debugInfo.lastSessionReadAt),
+    'Dernière lecture des notes : ' + fmt(debugInfo.lastNotesReadAt) + ' (source : ' + debugInfo.notesSource + ')',
+    'Dernière erreur : ' + (debugInfo.lastError || 'aucune'),
+    'resetToken actuel : ' + session.resetToken,
+    'Contenu brut des notes :',
+    JSON.stringify(session.scores || {}, null, 2)
+  ].join('\n');
+  navigator.clipboard.writeText(report).then(() => {
+    alert('Rapport copié ! Tu peux le coller ici pour que je le lise.');
+  }).catch(() => {
+    alert(report);
+  });
 }
 
 function launchNewAthlete(){
