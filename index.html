@@ -238,10 +238,18 @@ function initFirebase(){
   try{
     firebase.initializeApp(firebaseConfig);
     db = firebase.firestore();
+    // Force le mode "long polling" : certains réseaux mobiles/proxys coupent le flux
+    // temps réel (WebChannel) après le tout premier message. Ce réglage évite ce
+    // blocage silencieux (la 1ère lecture passe, mais plus rien après).
+    db.settings({
+      experimentalAutoDetectLongPolling: true,
+      merge: true
+    });
     firebaseReady = true;
     document.getElementById('topPillText').textContent = 'Connexion en cours…';
     listenSession();
     listenPing();
+    startPollingFallback();
   }catch(e){
     console.error('Erreur d\'initialisation Firebase :', e);
     document.getElementById('topPillText').textContent = 'Erreur de connexion';
@@ -379,19 +387,7 @@ function listenSession(){
       document.getElementById('topPill').classList.remove('offline');
     }
     const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, scores:{}, final:null };
-    session = {
-      athleteName: data.athleteName || '',
-      resetToken: data.resetToken || 0,
-      scores: data.scores || {},
-      final: data.final || null
-    };
-    // Si l'admin a lancé un nouvel athlète, on réinitialise la note locale du juge
-    if(view === 'judge' && session.resetToken !== lastSeenResetToken){
-      lastSeenResetToken = session.resetToken;
-      resetJudgeState();
-      writeJudgeScore();
-    }
-    render();
+    applySessionData(data);
   }, err => {
     console.error('Erreur Firestore (onSnapshot) :', err.code, err.message);
     document.getElementById('topPillText').textContent = 'Connexion bloquée (' + err.code + ')';
@@ -400,6 +396,54 @@ function listenSession(){
     lastFirestoreError = 'Lecture de la session bloquée : ' + err.code + ' — ' + err.message;
     render();
   });
+}
+
+/* =========================================================
+   FILET DE SECURITE — relecture périodique directe (sans streaming)
+   En complément du onSnapshot temps réel, on relit le document toutes les
+   3s via une requête HTTPS classique (.get). Si le flux temps réel est
+   bloqué par un proxy/réseau (cas fréquent en 4G), ceci garantit quand
+   même l'arrivée des notes avec au plus 3s de retard.
+========================================================= */
+let pollingInterval = null;
+let isRefreshing = false;
+
+function applySessionData(data){
+  session = {
+    athleteName: data.athleteName || '',
+    resetToken: data.resetToken || 0,
+    scores: data.scores || {},
+    final: data.final || null
+  };
+  if(view === 'judge' && session.resetToken !== lastSeenResetToken){
+    lastSeenResetToken = session.resetToken;
+    resetJudgeState();
+    writeJudgeScore();
+  }
+  render();
+}
+
+function startPollingFallback(){
+  if(pollingInterval) return;
+  pollingInterval = setInterval(() => {
+    if(!firebaseReady) return;
+    sessionRef().get({source:'server'}).then(doc => {
+      const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, scores:{}, final:null };
+      applySessionData(data);
+    }).catch(err => {
+      console.warn('Relecture périodique impossible (réseau ?) :', err.code, err.message);
+    });
+  }, 3000);
+}
+
+function manualRefresh(){
+  if(!firebaseReady || isRefreshing) return;
+  isRefreshing = true;
+  sessionRef().get({source:'server'}).then(doc => {
+    const data = doc.exists ? doc.data() : { athleteName:'', resetToken:0, scores:{}, final:null };
+    applySessionData(data);
+  }).catch(err => reportWriteError('manualRefresh', err))
+    .finally(() => { isRefreshing = false; });
 }
 
 function reportWriteError(label, err){
@@ -685,6 +729,9 @@ function renderAdmin(){
   return `
     <a class="backlink" onclick="goHome()">← Changer de rôle</a>
     <div class="card">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+        <button class="btn btn-plus" onclick="manualRefresh()">🔄 Rafraîchir maintenant</button>
+      </div>
       <label class="field-label">Nom de l'athlète en cours</label>
       <div class="athlete-input">
         <input type="text" placeholder="Ex : Awa Diop" value="${escapeHtml(athleteNameInput)}" oninput="athleteNameInput=this.value">
