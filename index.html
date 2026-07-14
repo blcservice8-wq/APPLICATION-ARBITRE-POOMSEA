@@ -187,6 +187,13 @@
   .stage .close-stage{position:absolute;top:24px;right:28px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;}
   .stage .close-stage:hover{background:rgba(255,255,255,0.2);}
   .stage .waiting{font-size:20px;color:#9fb0c8;}
+  .stage-chrono{
+    position:absolute;top:26px;left:28px;
+    font-size:44px;font-weight:800;font-family:Georgia,serif;color:#cdd8e6;
+    background:rgba(255,255,255,0.05);border:1px solid var(--line);border-radius:16px;
+    padding:8px 22px;letter-spacing:.02em;transition:.15s;
+  }
+  .stage-chrono.running{color:var(--gold);border-color:var(--gold);box-shadow:0 0 24px rgba(212,175,55,0.25);}
 
   .history{margin-top:26px;}
   .history table{width:100%;border-collapse:collapse;font-size:13px;}
@@ -214,6 +221,7 @@
     </div>
   </div>
   <span class="pill" id="topPill"><span class="dotstatus"></span><span id="topPillText">Connexion…</span></span>
+  <a class="backlink" style="margin:0;color:#9fb0c8;" onclick="logout()">🔓 Déconnexion</a>
 </div>
 
 <div class="wrap" id="app"></div>
@@ -222,6 +230,7 @@
 <div class="stage" id="stage">
   <button class="close-stage" onclick="closeStage()">Fermer ✕</button>
   <div class="league">Ligue de Dakar Taekwondo</div>
+  <div class="stage-chrono" id="stageChrono">0:00.0</div>
   <div id="stageContent"></div>
 </div>
 
@@ -237,6 +246,74 @@ const firebaseConfig = {
   messagingSenderId: "781280891215",
   appId: "1:781280891215:web:c0a6887f7fa7a386c2753a"
 };
+
+/* =========================================================
+   ACCES SECURISE — identifiant + mot de passe (hash SHA-256)
+   Pour changer les identifiants : remplace AUTH_USERNAME, et régénère
+   AUTH_PASSWORD_HASH avec, dans la console du navigateur :
+     crypto.subtle.digest('SHA-256', new TextEncoder().encode('TON_NOUVEAU_MDP'))
+       .then(b => console.log(Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('')))
+========================================================= */
+const AUTH_USERNAME = 'poomsae';
+const AUTH_PASSWORD_HASH = '95a030f7e3a6f290627638f1f9492329f55c965c62741346dc43a29e84811ea2'; // = "dakar2026"
+const AUTH_SESSION_KEY = 'poomsae_auth_ok';
+
+let loginUsernameInput = '';
+let loginPasswordInput = '';
+let loginError = '';
+let loginChecking = false;
+
+async function sha256Hex(str){
+  const enc = new TextEncoder().encode(str);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function attemptLogin(){
+  loginError = '';
+  loginChecking = true;
+  render();
+  const userOk = loginUsernameInput.trim().toLowerCase() === AUTH_USERNAME.toLowerCase();
+  const passHash = await sha256Hex(loginPasswordInput);
+  loginChecking = false;
+  if(userOk && passHash === AUTH_PASSWORD_HASH){
+    sessionStorage.setItem(AUTH_SESSION_KEY, '1');
+    loginPasswordInput = '';
+    view = 'home';
+  } else {
+    loginError = 'Identifiant ou mot de passe incorrect.';
+  }
+  render();
+}
+
+function logout(){
+  sessionStorage.removeItem(AUTH_SESSION_KEY);
+  view = 'login';
+  render();
+}
+
+function renderLogin(){
+  return `
+    <div class="card" style="max-width:360px;margin:50px auto 0;">
+      <div class="section-title" style="margin-top:0;text-align:center;">🔒 Accès réservé</div>
+      <p style="font-size:13px;color:#6b7280;text-align:center;margin:0 0 18px;">Ligue de Dakar Taekwondo — Notation Poomsae</p>
+      ${loginError ? `<div class="config-warning" style="background:#fdeaea;color:#a12626;border-color:#f3b7bd;">${escapeHtml(loginError)}</div>` : ''}
+      <label class="field-label">Identifiant</label>
+      <input type="text" autocapitalize="off" value="${escapeHtml(loginUsernameInput)}"
+        oninput="loginUsernameInput=this.value"
+        onkeydown="if(event.key==='Enter')attemptLogin()"
+        style="margin-bottom:12px;">
+      <label class="field-label">Mot de passe</label>
+      <input type="password" value="${escapeHtml(loginPasswordInput)}"
+        oninput="loginPasswordInput=this.value"
+        onkeydown="if(event.key==='Enter')attemptLogin()"
+        style="margin-bottom:16px;">
+      <button class="btn-new" style="width:100%;" onclick="attemptLogin()" ${loginChecking ? 'disabled' : ''}>
+        ${loginChecking ? 'Vérification…' : 'Se connecter'}
+      </button>
+    </div>
+  `;
+}
 
 let db = null;
 let firebaseReady = false;
@@ -272,11 +349,13 @@ function initFirebase(){
 }
 
 let firstSnapshotReceived = false;
+let firstNotesSnapshotReceived = false; // true seulement après la 1ère vraie lecture de la sous-collection notes/
+let judgeHydrated = false; // true seulement une fois les données réelles du serveur confirmées pour CE juge
 
 /* =========================================================
    ETAT GLOBAL
 ========================================================= */
-let view = 'home'; // home | judge | admin
+let view = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(AUTH_SESSION_KEY) === '1') ? 'home' : 'login'; // login | home | judge | admin
 let currentJudge = null; // 1..5
 
 // Etat de session partagé, reflet de Firestore session/current
@@ -287,6 +366,95 @@ let session = {
   final: null // { final, kept, dropped, name }
 };
 let lastSeenResetToken = -1;
+
+/* =========================================================
+   CHRONO DE PASSAGE — temps d'exécution de l'athlète
+   Chrono purement local (pas de synchro Firestore) : contrôlé depuis
+   l'écran admin, affiché en direct sur l'admin ET sur l'écran central.
+========================================================= */
+let chronoState = { running:false, startEpoch:null, elapsedMs:0 };
+let chronoTickInterval = null;
+
+function chronoCurrentMs(){
+  if(chronoState.running && chronoState.startEpoch){
+    return chronoState.elapsedMs + (Date.now() - chronoState.startEpoch);
+  }
+  return chronoState.elapsedMs;
+}
+
+function formatChrono(ms){
+  const totalDs = Math.max(0, Math.floor(ms / 100)); // dixièmes de seconde
+  const min = Math.floor(totalDs / 600);
+  const sec = Math.floor((totalDs % 600) / 10);
+  const ds = totalDs % 10;
+  return min + ':' + String(sec).padStart(2,'0') + '.' + ds;
+}
+
+function ensureChronoTick(){
+  if(!chronoTickInterval){
+    chronoTickInterval = setInterval(updateChronoDisplays, 100);
+  }
+}
+
+// Met à jour directement le texte des compteurs (sans passer par render()) pour ne
+// jamais perdre le focus du champ "nom de l'athlète" pendant que le chrono tourne.
+function updateChronoDisplays(){
+  const txt = formatChrono(chronoCurrentMs());
+  const adminEl = document.getElementById('chronoAdminDisplay');
+  if(adminEl) adminEl.textContent = txt;
+  const stageEl = document.getElementById('stageChrono');
+  if(stageEl){
+    stageEl.textContent = txt;
+    stageEl.classList.toggle('running', chronoState.running);
+  }
+}
+
+function startChrono(){
+  if(chronoState.running) return;
+  chronoState.running = true;
+  chronoState.startEpoch = Date.now();
+  ensureChronoTick();
+  render();
+}
+function pauseChrono(){
+  if(!chronoState.running) return;
+  chronoState.elapsedMs = chronoCurrentMs();
+  chronoState.running = false;
+  chronoState.startEpoch = null;
+  render();
+}
+function resetChrono(){
+  chronoState.running = false;
+  chronoState.startEpoch = null;
+  chronoState.elapsedMs = 0;
+  updateChronoDisplays();
+  render();
+}
+
+function renderChronoPanel(){
+  return `
+    <div class="card" style="margin-top:16px;">
+      <div class="section-title" style="margin-top:0;">⏱️ Chrono de passage (temps d'exécution)</div>
+      <div style="font-size:46px;font-weight:800;font-family:Georgia,serif;color:var(--navy);text-align:center;margin:8px 0;" id="chronoAdminDisplay">${formatChrono(chronoCurrentMs())}</div>
+      <div class="btnrow" style="justify-content:center;">
+        <button class="btn btn-plus" onclick="startChrono()" ${chronoState.running ? 'disabled' : ''}>▶️ ${chronoState.elapsedMs > 0 && !chronoState.running ? 'Reprendre' : 'Démarrer'}</button>
+        <button class="btn btn-minus" onclick="pauseChrono()" ${chronoState.running ? '' : 'disabled'}>⏸ Pause</button>
+        <button class="btn btn-reset" onclick="resetChrono()">↺ Réinitialiser</button>
+      </div>
+      <button class="btn-new" style="width:100%;margin-top:12px;" onclick="openStageChrono()">🖥️ Afficher le chrono à l'écran central</button>
+    </div>
+  `;
+}
+
+function openStageChrono(){
+  document.getElementById('stageContent').innerHTML = `
+    <div class="athlete-name">${session.athleteName ? escapeHtml(session.athleteName) : "En attente de l'athlète"}</div>
+    <div class="final-label" style="margin-top:-18px;margin-bottom:10px;">Temps d'exécution</div>
+  `;
+  document.getElementById('stage').classList.add('active');
+  ensureChronoTick();
+  updateChronoDisplays();
+}
 
 const judgeState = {
   precision: 4.0,
@@ -427,6 +595,10 @@ function listenNotes(){
     session.scores = scores;
     debugInfo.lastNotesReadAt = new Date();
     debugInfo.notesSource = 'temps réel (onSnapshot)';
+    firstNotesSnapshotReceived = true;
+    if(view === 'judge' && !judgeHydrated){
+      hydrateJudgeFromSession();
+    }
     render();
   }, err => {
     console.error('Erreur Firestore (onSnapshot notes) :', err.code, err.message);
@@ -459,6 +631,7 @@ function applySessionData(data){
   if(view === 'judge' && session.resetToken !== lastSeenResetToken){
     lastSeenResetToken = session.resetToken;
     resetJudgeState();
+    judgeHydrated = true;
     writeJudgeScore();
   }
   render();
@@ -521,6 +694,22 @@ function reportWriteError(label, err){
 
 let lastNoteSentAt = null;
 let isSendingNote = false;
+
+function hydrateJudgeFromSession(){
+  lastSeenResetToken = session.resetToken;
+  const existing = session.scores['j' + currentJudge];
+  if(existing){
+    judgeState.precision = existing.precision ?? 4.0;
+    judgeState.puissance = existing.puissance ?? 2.0;
+    judgeState.rythme = existing.rythme ?? 2.0;
+    judgeState.expression = existing.expression ?? 2.0;
+    judgeState.validated = existing.validated ?? false;
+  }
+  judgeHydrated = true;
+  // Sûr maintenant : judgeState reflète soit la vraie note déjà en base, soit un vrai départ
+  // vierge confirmé par le serveur (jamais une supposition faite avant réception des données).
+  writeJudgeScore();
+}
 
 function writeJudgeScore(){
   if(!firebaseReady || !currentJudge) return Promise.resolve();
@@ -585,7 +774,9 @@ function writeFinal(finalObj){
 ========================================================= */
 function render(){
   const app = document.getElementById('app');
-  if(view === 'home'){
+  if(view === 'login'){
+    app.innerHTML = renderLogin();
+  } else if(view === 'home'){
     app.innerHTML = renderHome();
   } else if(view === 'judge'){
     app.innerHTML = renderJudge();
@@ -631,23 +822,18 @@ function renderHome(){
 function goJudge(n){
   currentJudge = n;
   resetJudgeState();
-  lastSeenResetToken = session.resetToken;
   lastNoteSentAt = null;
   isSendingNote = false;
-  // si une note existe déjà en base pour ce juge sur l'athlète en cours, on la reprend
-  const existing = session.scores['j'+n];
-  if(existing){
-    judgeState.precision = existing.precision ?? 4.0;
-    judgeState.puissance = existing.puissance ?? 2.0;
-    judgeState.rythme = existing.rythme ?? 2.0;
-    judgeState.expression = existing.expression ?? 2.0;
-    judgeState.validated = existing.validated ?? false;
-  }
+  judgeHydrated = false;
   view = 'judge';
+  if(firstNotesSnapshotReceived){
+    // Les notes existantes sont déjà connues localement (pas le tout premier chargement) :
+    // on peut hydrater et notifier l'admin immédiatement, en toute sécurité.
+    hydrateJudgeFromSession();
+  }
+  // Si firstNotesSnapshotReceived est encore false, on ne fait RIEN ici : c'est listenNotes()
+  // qui appellera hydrateJudgeFromSession() dès que la vraie donnée serveur arrivera.
   render();
-  // Envoie immédiatement la note (même par défaut) pour que l'admin voie
-  // "en cours..." dès que le juge ouvre son écran, sans attendre un clic.
-  writeJudgeScore();
 }
 function goAdmin(){
   athleteNameInput = session.athleteName || '';
@@ -663,6 +849,19 @@ function goHome(){
    VUE JUGE
 ========================================================= */
 function renderJudge(){
+  if(!judgeHydrated){
+    return `
+      <a class="backlink" onclick="goHome()">← Changer de rôle</a>
+      <div class="card" style="text-align:center;padding:44px 22px;">
+        <div style="font-size:15px;color:#4b5563;font-weight:700;">🔄 Récupération de votre note existante…</div>
+        <p style="font-size:13px;color:#9098a3;margin-top:10px;line-height:1.6;">
+          Un instant : on vérifie d'abord auprès du serveur si une note a déjà été enregistrée pour le Juge ${currentJudge},
+          pour ne jamais l'écraser par erreur.
+        </p>
+      </div>
+    `;
+  }
+
   const athleteBanner = session.athleteName
     ? `<div class="athlete-banner"><span class="name">${escapeHtml(session.athleteName)}</span><span class="tag">Athlète en cours</span></div>`
     : `<div class="athlete-banner waiting"><span class="name">En attente que l'admin lance un athlète…</span></div>`;
@@ -845,6 +1044,8 @@ function renderAdmin(){
 
       ${resultBlock}
     </div>
+
+    ${renderChronoPanel()}
 
     <div class="card history">
       <div class="section-title" style="margin-top:0;">Historique (synchronisé)</div>
