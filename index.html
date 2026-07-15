@@ -169,6 +169,33 @@
   .btn-calc:hover{background:var(--blue);}
   .btn-calc:disabled{background:#c2c8d1;cursor:not-allowed;}
 
+  .mode-toggle{display:flex;gap:10px;flex-wrap:wrap;}
+  .mode-btn{flex:1;min-width:170px;padding:14px;border-radius:10px;border:2px solid #e3e6ea;background:#fff;color:#4b5563;font-weight:700;font-size:13px;cursor:pointer;text-align:center;transition:.12s;}
+  .mode-btn.active{border-color:var(--navy);background:var(--navy);color:#fff;}
+
+  .pick-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px;}
+  @media(max-width:480px){.pick-grid{grid-template-columns:1fr;}}
+  .pick-btn{padding:26px 12px;border-radius:14px;border:3px solid #e3e6ea;background:#fff;cursor:pointer;text-align:center;transition:.12s;}
+  .pick-btn:active{transform:scale(.97);}
+  .pick-btn .tag{font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;}
+  .pick-btn.side-a .tag{color:var(--red);}
+  .pick-btn.side-b .tag{color:var(--blue);}
+  .pick-btn.side-a.selected{border-color:var(--red);background:#fde7ea;}
+  .pick-btn.side-b.selected{border-color:var(--blue);background:#e8f0fb;}
+  .pick-btn .pname{font-size:19px;font-weight:800;color:var(--ink);margin-top:8px;}
+
+  .vs-row{display:flex;gap:20px;align-items:stretch;justify-content:center;flex-wrap:wrap;margin-top:10px;}
+  .vs-side{padding:20px 30px;border-radius:16px;border:3px solid var(--line);min-width:180px;}
+  .vs-side.winner{border-color:var(--gold);box-shadow:0 0 30px rgba(212,175,55,0.25);}
+  .vs-side.a{background:rgba(200,16,46,0.12);}
+  .vs-side.b{background:rgba(0,80,160,0.15);}
+  .vs-side .tag{font-size:12px;letter-spacing:.1em;text-transform:uppercase;}
+  .vs-side.a .tag{color:#f3b7bd;}
+  .vs-side.b .tag{color:#bcd0ec;}
+  .vs-side .vname{font-size:30px;font-weight:800;font-family:Georgia,serif;color:#fff;margin:6px 0;}
+  .vs-side .votes{font-size:20px;color:var(--gold);font-weight:800;}
+  .vs-mid{display:flex;align-items:center;font-size:22px;color:#7e8aa0;font-weight:700;}
+
   /* ---------- ECRAN DE PROJECTION ---------- */
   .stage{display:none;}
   .stage.active{
@@ -360,10 +387,13 @@ let currentJudge = null; // 1..5
 
 // Etat de session partagé, reflet de Firestore session/current
 let session = {
-  athleteName: '',
+  mode: 'single', // 'single' (1 athlète, note chiffrée) | 'sideBySide' (2 athlètes, choix du juge)
+  athleteName: '', // utilisé en mode 'single'
+  athleteA: '', athleteB: '', // utilisés en mode 'sideBySide'
   resetToken: 0,
-  scores: {}, // { j1: {precision,puissance,rythme,expression,total,validated}, ... }
-  final: null // { final, kept, dropped, name }
+  scores: {}, // mode single: { j1:{precision,puissance,rythme,expression,total,validated}, ... }
+              // mode sideBySide: { j1:{winner:'A'|'B',validated}, ... }
+  final: null // { mode, name, final, kept, dropped } OU { mode:'sideBySide', athleteA, athleteB, winner, winnerName, votes:{A,B} }
 };
 let lastSeenResetToken = -1;
 
@@ -472,6 +502,24 @@ function resetJudgeState(){
   judgeState.rythme = 2.0;
   judgeState.expression = 2.0;
   judgeState.validated = false;
+}
+
+// Etat du juge en mode 'sideBySide' : grille complète (précision + présentation) pour
+// CHACUN des deux athlètes A et B (même structure que judgeState en mode single).
+// La validation est unique pour les deux grilles à la fois.
+let judgeStateA = { precision: 4.0, faultsLog: [], puissance: 2.0, rythme: 2.0, expression: 2.0 };
+let judgeStateB = { precision: 4.0, faultsLog: [], puissance: 2.0, rythme: 2.0, expression: 2.0 };
+let sideValidated = false;
+
+function resetSideStates(){
+  judgeStateA.precision = 4.0; judgeStateA.faultsLog = [];
+  judgeStateA.puissance = 2.0; judgeStateA.rythme = 2.0; judgeStateA.expression = 2.0;
+  judgeStateB.precision = 4.0; judgeStateB.faultsLog = [];
+  judgeStateB.puissance = 2.0; judgeStateB.rythme = 2.0; judgeStateB.expression = 2.0;
+  sideValidated = false;
+}
+function sideTotal(state){
+  return round1(state.precision + state.puissance + state.rythme + state.expression);
 }
 
 function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
@@ -625,12 +673,16 @@ let debugInfo = {
 };
 
 function applySessionData(data){
+  session.mode = data.mode || 'single';
   session.athleteName = data.athleteName || '';
+  session.athleteA = data.athleteA || '';
+  session.athleteB = data.athleteB || '';
   session.resetToken = data.resetToken || 0;
   session.final = data.final || null;
   if(view === 'judge' && session.resetToken !== lastSeenResetToken){
     lastSeenResetToken = session.resetToken;
     resetJudgeState();
+    resetSideStates();
     judgeHydrated = true;
     writeJudgeScore();
   }
@@ -698,7 +750,21 @@ let isSendingNote = false;
 function hydrateJudgeFromSession(){
   lastSeenResetToken = session.resetToken;
   const existing = session.scores['j' + currentJudge];
-  if(existing){
+  if(session.mode === 'sideBySide'){
+    const eA = existing && existing.A ? existing.A : null;
+    const eB = existing && existing.B ? existing.B : null;
+    judgeStateA.precision = eA ? (eA.precision ?? 4.0) : 4.0;
+    judgeStateA.puissance = eA ? (eA.puissance ?? 2.0) : 2.0;
+    judgeStateA.rythme = eA ? (eA.rythme ?? 2.0) : 2.0;
+    judgeStateA.expression = eA ? (eA.expression ?? 2.0) : 2.0;
+    judgeStateA.faultsLog = [];
+    judgeStateB.precision = eB ? (eB.precision ?? 4.0) : 4.0;
+    judgeStateB.puissance = eB ? (eB.puissance ?? 2.0) : 2.0;
+    judgeStateB.rythme = eB ? (eB.rythme ?? 2.0) : 2.0;
+    judgeStateB.expression = eB ? (eB.expression ?? 2.0) : 2.0;
+    judgeStateB.faultsLog = [];
+    sideValidated = existing ? !!existing.validated : false;
+  } else if(existing){
     judgeState.precision = existing.precision ?? 4.0;
     judgeState.puissance = existing.puissance ?? 2.0;
     judgeState.rythme = existing.rythme ?? 2.0;
@@ -706,7 +772,7 @@ function hydrateJudgeFromSession(){
     judgeState.validated = existing.validated ?? false;
   }
   judgeHydrated = true;
-  // Sûr maintenant : judgeState reflète soit la vraie note déjà en base, soit un vrai départ
+  // Sûr maintenant : l'état reflète soit la vraie donnée déjà en base, soit un vrai départ
   // vierge confirmé par le serveur (jamais une supposition faite avant réception des données).
   writeJudgeScore();
 }
@@ -714,17 +780,39 @@ function hydrateJudgeFromSession(){
 function writeJudgeScore(){
   if(!firebaseReady || !currentJudge) return Promise.resolve();
   isSendingNote = true;
-  const payload = {
-    precision: judgeState.precision,
-    puissance: judgeState.puissance,
-    rythme: judgeState.rythme,
-    expression: judgeState.expression,
-    total: judgeTotal(),
-    validated: judgeState.validated,
-    resetToken: session.resetToken,
-    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-  };
-  return notesRef().doc('j' + currentJudge).set(payload, {merge:true})
+  const payload = session.mode === 'sideBySide'
+    ? {
+        mode: 'sideBySide',
+        A: {
+          precision: judgeStateA.precision,
+          puissance: judgeStateA.puissance,
+          rythme: judgeStateA.rythme,
+          expression: judgeStateA.expression,
+          total: sideTotal(judgeStateA)
+        },
+        B: {
+          precision: judgeStateB.precision,
+          puissance: judgeStateB.puissance,
+          rythme: judgeStateB.rythme,
+          expression: judgeStateB.expression,
+          total: sideTotal(judgeStateB)
+        },
+        validated: sideValidated,
+        resetToken: session.resetToken,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      }
+    : {
+        mode: 'single',
+        precision: judgeState.precision,
+        puissance: judgeState.puissance,
+        rythme: judgeState.rythme,
+        expression: judgeState.expression,
+        total: judgeTotal(),
+        validated: judgeState.validated,
+        resetToken: session.resetToken,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+  return notesRef().doc('j' + currentJudge).set(payload, {merge:false})
     .then(() => {
       lastNoteSentAt = new Date();
       isSendingNote = false;
@@ -750,7 +838,10 @@ function startNewAthlete(name){
   const deletions = [1,2,3,4,5].map(i => notesRef().doc('j'+i).delete().catch(()=>{}));
   Promise.all(deletions).then(() => {
     sessionRef().set({
+      mode: 'single',
       athleteName: name,
+      athleteA: '',
+      athleteB: '',
       resetToken: newResetToken,
       final: null
     }, {merge:false})
@@ -758,15 +849,79 @@ function startNewAthlete(name){
   });
 }
 
+function startNewMatch(a, b){
+  if(!firebaseReady) return;
+  const newResetToken = (session.resetToken || 0) + 1;
+  const deletions = [1,2,3,4,5].map(i => notesRef().doc('j'+i).delete().catch(()=>{}));
+  Promise.all(deletions).then(() => {
+    sessionRef().set({
+      mode: 'sideBySide',
+      athleteName: '',
+      athleteA: a,
+      athleteB: b,
+      resetToken: newResetToken,
+      final: null
+    }, {merge:false})
+      .catch(err => reportWriteError('startNewMatch', err));
+  });
+}
+
+// Change le type de compétition (simple élimination <-> side by side). Efface l'entrée en
+// cours (comme un "nouvel athlète"/"nouveau match") car les deux formats de notes sont
+// incompatibles entre eux.
+function setCompetitionMode(mode){
+  if(!firebaseReady || mode === session.mode) return;
+  const hasActivity = (session.scores && Object.keys(session.scores).length > 0) || session.final ||
+    session.athleteName || session.athleteA || session.athleteB;
+  if(hasActivity){
+    const ok = confirm(
+      "Changer de type de compétition efface l'entrée en cours (nom(s) et notes/choix des juges).\n\nContinuer ?"
+    );
+    if(!ok) return;
+  }
+  const newResetToken = (session.resetToken || 0) + 1;
+  const deletions = [1,2,3,4,5].map(i => notesRef().doc('j'+i).delete().catch(()=>{}));
+  Promise.all(deletions).then(() => {
+    sessionRef().set({
+      mode,
+      athleteName: '',
+      athleteA: '',
+      athleteB: '',
+      resetToken: newResetToken,
+      final: null
+    }, {merge:false}).catch(err => reportWriteError('setCompetitionMode', err));
+  });
+  athleteNameInput = '';
+  athleteAInput = '';
+  athleteBInput = '';
+}
+
 function writeFinal(finalObj){
   if(!firebaseReady) return;
   sessionRef().set({ final: finalObj }, {merge:true})
     .catch(err => reportWriteError('writeFinal-session', err));
-  historyRef().add({
-    name: finalObj.name,
-    final: finalObj.final,
-    createdAt: firebase.firestore.FieldValue.serverTimestamp()
-  }).catch(err => reportWriteError('writeFinal-historique', err));
+
+  const historyEntry = finalObj.mode === 'sideBySide'
+    ? {
+        mode: 'sideBySide',
+        name: finalObj.winner
+          ? `${finalObj.winnerName} bat ${finalObj.winner === 'A' ? finalObj.athleteB : finalObj.athleteA}`
+          : `Égalité — ${finalObj.athleteA} vs ${finalObj.athleteB}`,
+        winnerName: finalObj.winnerName,
+        athleteA: finalObj.athleteA,
+        athleteB: finalObj.athleteB,
+        finalA: finalObj.finalA,
+        finalB: finalObj.finalB,
+        final: null,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      }
+    : {
+        mode: 'single',
+        name: finalObj.name,
+        final: finalObj.final,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+  historyRef().add(historyEntry).catch(err => reportWriteError('writeFinal-historique', err));
 }
 
 /* =========================================================
@@ -844,6 +999,7 @@ function renderHome(){
 function goJudge(n){
   currentJudge = n;
   resetJudgeState();
+  resetSideStates();
   lastNoteSentAt = null;
   isSendingNote = false;
   judgeHydrated = false;
@@ -859,6 +1015,8 @@ function goJudge(n){
 }
 function goAdmin(){
   athleteNameInput = session.athleteName || '';
+  athleteAInput = session.athleteA || '';
+  athleteBInput = session.athleteB || '';
   view = 'admin';
   render();
 }
@@ -882,6 +1040,10 @@ function renderJudge(){
         </p>
       </div>
     `;
+  }
+
+  if(session.mode === 'sideBySide'){
+    return renderJudgeSideBySide();
   }
 
   const athleteBanner = session.athleteName
@@ -915,7 +1077,7 @@ function renderJudge(){
     <div class="card">
       <div class="score-block" style="border-top:none;margin-top:0;padding-top:0;">
         <div class="score-head">
-          <h3>Précision</h3>
+          <h3>Accuracy</h3>
           <span class="max">Départ 4,0 pts</span>
         </div>
         <div class="score-value">${judgeState.precision.toFixed(1)}</div>
@@ -923,7 +1085,7 @@ function renderJudge(){
           <button class="btn btn-faute1" onclick="faultePrecision(0.1)">−0,1 faute simple</button>
           <button class="btn btn-faute3" onclick="faultePrecision(0.3)">−0,3 faute grave</button>
         </div>
-        ${judgeState.faultsLog.length ? `<button class="btn btn-reset" onclick="resetPrecision()">↺ Réinitialiser la précision (${judgeState.faultsLog.length} faute(s))</button>` : ''}
+        ${judgeState.faultsLog.length ? `<button class="btn btn-reset" onclick="resetPrecision()">↺ Réinitialiser l'Accuracy (${judgeState.faultsLog.length} faute(s))</button>` : ''}
       </div>
 
       ${renderPresentationItem('puissance','Puissance et énergie')}
@@ -940,6 +1102,142 @@ function renderJudge(){
       <button class="btn-validate" onclick="validateJudge()">Valider la note</button>
     </div>
   `;
+}
+
+/* =========================================================
+   VUE JUGE — MODE SIDE BY SIDE (choix entre deux athlètes)
+========================================================= */
+function renderJudgeSideBySide(){
+  const bothNamed = session.athleteA || session.athleteB;
+  const athleteBanner = bothNamed
+    ? `<div class="athlete-banner"><span class="name">${escapeHtml(session.athleteA || 'Athlète A')} 🆚 ${escapeHtml(session.athleteB || 'Athlète B')}</span><span class="tag">Side by side</span></div>`
+    : `<div class="athlete-banner waiting"><span class="name">En attente que l'admin lance un match…</span></div>`;
+
+  const sendStatus = isSendingNote
+    ? `<div class="send-status sending">⏳ Envoi en cours…</div>`
+    : (lastNoteSentAt
+        ? `<div class="send-status ok">✅ Envoyée à ${lastNoteSentAt.toLocaleTimeString('fr-FR')}</div>`
+        : `<div class="send-status pending">⚠️ Pas encore envoyée</div>`);
+
+  if(sideValidated){
+    return `
+      <a class="backlink" onclick="goHome()">← Changer de rôle</a>
+      ${athleteBanner}
+      <div class="validated-banner">
+        <div class="who">Notes validées — Juge ${currentJudge}</div>
+        <div style="display:flex;gap:24px;justify-content:center;margin:10px 0;">
+          <div>
+            <div class="tag" style="color:#f3b7bd;font-size:12px;text-transform:uppercase;">🔴 ${escapeHtml(session.athleteA || 'Athlète A')}</div>
+            <div class="score" style="font-size:40px;">${sideTotal(judgeStateA).toFixed(1)}</div>
+          </div>
+          <div>
+            <div class="tag" style="color:#bcd0ec;font-size:12px;text-transform:uppercase;">🔵 ${escapeHtml(session.athleteB || 'Athlète B')}</div>
+            <div class="score" style="font-size:40px;">${sideTotal(judgeStateB).toFixed(1)}</div>
+          </div>
+        </div>
+        <div class="hint">Envoyées automatiquement à l'admin.</div>
+        ${sendStatus}
+        <button class="btn-send" onclick="sendNoteManually()">📤 Envoyer les notes</button>
+        <button class="btn-edit" onclick="unvalidateSide()">Modifier mes notes</button>
+      </div>
+    `;
+  }
+
+  return `
+    <a class="backlink" onclick="goHome()">← Changer de rôle</a>
+    ${athleteBanner}
+    <div class="card">
+      <div class="section-title" style="margin-top:0;color:var(--red);">🔴 ${escapeHtml(session.athleteA || 'Athlète A')}</div>
+      ${renderSideAthleteForm('A')}
+    </div>
+    <div class="card">
+      <div class="section-title" style="margin-top:0;color:var(--blue);">🔵 ${escapeHtml(session.athleteB || 'Athlète B')}</div>
+      ${renderSideAthleteForm('B')}
+    </div>
+    <div class="card">
+      ${sendStatus}
+      <button class="btn-send" onclick="sendNoteManually()">📤 Envoyer mes notes</button>
+      <button class="btn-validate" onclick="validateSide()">Valider mes deux notes</button>
+    </div>
+  `;
+}
+
+function renderSideAthleteForm(side){
+  const state = side === 'A' ? judgeStateA : judgeStateB;
+  return `
+    <div class="score-block" style="border-top:none;margin-top:0;padding-top:0;">
+      <div class="score-head">
+        <h3>Accuracy</h3>
+        <span class="max">Départ 4,0 pts</span>
+      </div>
+      <div class="score-value">${state.precision.toFixed(1)}</div>
+      <div class="btnrow">
+        <button class="btn btn-faute1" onclick="faultePrecisionSide('${side}',0.1)">−0,1 faute simple</button>
+        <button class="btn btn-faute3" onclick="faultePrecisionSide('${side}',0.3)">−0,3 faute grave</button>
+      </div>
+      ${state.faultsLog.length ? `<button class="btn btn-reset" onclick="resetPrecisionSide('${side}')">↺ Réinitialiser l'Accuracy (${state.faultsLog.length} faute(s))</button>` : ''}
+    </div>
+
+    ${renderPresentationItemSide(side,'puissance','Puissance et énergie')}
+    ${renderPresentationItemSide(side,'rythme','Rythme et tempo')}
+    ${renderPresentationItemSide(side,'expression',"Expression de l'énergie")}
+
+    <div class="total-bar">
+      <span class="lab">Total ${side === 'A' ? (session.athleteA || 'Athlète A') : (session.athleteB || 'Athlète B')}</span>
+      <span class="num">${sideTotal(state).toFixed(1)} / 10</span>
+    </div>
+  `;
+}
+
+function renderPresentationItemSide(side,key,label){
+  const state = side === 'A' ? judgeStateA : judgeStateB;
+  const val = state[key];
+  return `
+    <div class="score-block">
+      <div class="score-head">
+        <h3>${label}</h3>
+        <span class="max">Max 2,0 pts</span>
+      </div>
+      <div class="score-value">${val.toFixed(1)}</div>
+      <div class="btnrow">
+        <button class="btn btn-faute1" onclick="adjustPresentationSide('${side}','${key}',-0.1)">−0,1</button>
+        <button class="btn btn-faute3" onclick="adjustPresentationSide('${side}','${key}',-0.3)">−0,3</button>
+        <button class="btn btn-plus" onclick="adjustPresentationSide('${side}','${key}',0.1)">+0,1</button>
+        <button class="btn btn-minus" onclick="adjustPresentationSide('${side}','${key}',2.0 - val)" title="Remettre à 2,0">↺ 2,0</button>
+      </div>
+    </div>
+  `;
+}
+
+function faultePrecisionSide(side, amount){
+  const state = side === 'A' ? judgeStateA : judgeStateB;
+  state.precision = clamp(round1(state.precision - amount), 0, 4.0);
+  state.faultsLog.push(amount);
+  writeJudgeScore();
+  render();
+}
+function resetPrecisionSide(side){
+  const state = side === 'A' ? judgeStateA : judgeStateB;
+  state.precision = 4.0;
+  state.faultsLog = [];
+  writeJudgeScore();
+  render();
+}
+function adjustPresentationSide(side, key, delta){
+  const state = side === 'A' ? judgeStateA : judgeStateB;
+  state[key] = clamp(round1(state[key] + delta), 0, 2.0);
+  writeJudgeScore();
+  render();
+}
+function validateSide(){
+  sideValidated = true;
+  writeJudgeScore();
+  render();
+}
+function unvalidateSide(){
+  sideValidated = false;
+  writeJudgeScore();
+  render();
 }
 
 function renderPresentationItem(key,label){
@@ -993,6 +1291,8 @@ function unvalidate(){
    VUE ADMIN
 ========================================================= */
 let athleteNameInput = '';
+let athleteAInput = '';
+let athleteBInput = '';
 let history = [];
 let historyUnsub = null;
 
@@ -1004,9 +1304,31 @@ function listenHistory(){
   });
 }
 
+function renderModeToggle(){
+  return `
+    <div class="card">
+      <div class="section-title" style="margin-top:0;">🥋 Type de compétition</div>
+      <div class="mode-toggle">
+        <button class="mode-btn ${session.mode !== 'sideBySide' ? 'active' : ''}" onclick="setCompetitionMode('single')">
+          🥇 Simple élimination<br><span style="font-weight:400;font-size:11px;opacity:.85;">1 athlète, note chiffrée /10</span>
+        </button>
+        <button class="mode-btn ${session.mode === 'sideBySide' ? 'active' : ''}" onclick="setCompetitionMode('sideBySide')">
+          ⚖️ Side by side<br><span style="font-weight:400;font-size:11px;opacity:.85;">2 athlètes, chaque juge choisit un vainqueur</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
 function renderAdmin(){
   listenHistory();
+  return session.mode === 'sideBySide' ? renderAdminSideBySide() : renderAdminSingle();
+}
 
+/* =========================================================
+   VUE ADMIN — MODE SIMPLE ELIMINATION (1 athlète, note chiffrée)
+========================================================= */
+function renderAdminSingle(){
   const scores = session.scores || {};
   let slots = '';
   let validatedCount = 0;
@@ -1017,13 +1339,13 @@ function renderAdmin(){
     slots += `
       <div class="judge-slot ${isValidated ? 'is-validated' : ''}">
         <div class="jt">Juge ${i} ${s ? `<span class="stat ${isValidated?'ok':'wait'}">${isValidated?'✓ validé':'en cours…'}</span>` : `<span class="stat wait">en attente</span>`}</div>
-        <div class="val ${s ? '' : 'pending'}">${s ? s.total.toFixed(1) : '—'}</div>
+        <div class="val ${s ? '' : 'pending'}">${s && typeof s.total === 'number' ? s.total.toFixed(1) : '—'}</div>
       </div>
     `;
   }
 
   let resultBlock = '';
-  if(session.final){
+  if(session.final && session.final.mode !== 'sideBySide'){
     resultBlock = `
       <div class="total-bar" style="margin-top:24px;">
         <span class="lab">Note finale — ${escapeHtml(session.final.name || 'Athlète')}</span>
@@ -1037,16 +1359,9 @@ function renderAdmin(){
     `;
   }
 
-  let historyRows = history.map((h,idx) => `
-    <tr>
-      <td>${idx+1}</td>
-      <td>${escapeHtml(h.name || '—')}</td>
-      <td>${(h.final ?? 0).toFixed(1)}</td>
-    </tr>
-  `).join('');
-
   return `
     <a class="backlink" onclick="goHome()">← Changer de rôle</a>
+    ${renderModeToggle()}
     <div class="card">
       <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
         <button class="btn btn-plus" onclick="manualRefresh()">🔄 Rafraîchir maintenant</button>
@@ -1068,18 +1383,107 @@ function renderAdmin(){
     </div>
 
     ${renderChronoPanel()}
+    ${renderHistoryCard()}
+    ${renderDebugPanel()}
+  `;
+}
 
+/* =========================================================
+   VUE ADMIN — MODE SIDE BY SIDE (2 athlètes, choix des juges)
+========================================================= */
+function launchNewMatch(){
+  const a = (athleteAInput || '').trim();
+  const b = (athleteBInput || '').trim();
+  if(!a || !b){
+    alert("Merci d'indiquer les noms des deux athlètes (A et B).");
+    return;
+  }
+  startNewMatch(a, b);
+}
+
+function renderAdminSideBySide(){
+  const scores = session.scores || {};
+  let slots = '';
+  let validatedCount = 0;
+  for(let i=1;i<=5;i++){
+    const s = scores['j'+i];
+    const isValidated = s && s.validated;
+    if(isValidated) validatedCount++;
+    const totalA = s && s.A && typeof s.A.total === 'number' ? s.A.total.toFixed(1) : '—';
+    const totalB = s && s.B && typeof s.B.total === 'number' ? s.B.total.toFixed(1) : '—';
+    slots += `
+      <div class="judge-slot ${isValidated ? 'is-validated' : ''}">
+        <div class="jt">Juge ${i} ${s ? `<span class="stat ${isValidated?'ok':'wait'}">${isValidated?'✓ validé':'en cours…'}</span>` : `<span class="stat wait">en attente</span>`}</div>
+        <div class="val ${s ? '' : 'pending'}" style="font-size:16px;display:flex;gap:14px;">
+          <span>🔴 ${totalA}</span><span>🔵 ${totalB}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  let resultBlock = '';
+  if(session.final && session.final.mode === 'sideBySide'){
+    const f = session.final;
+    const winnerLabel = f.winner === 'A' ? escapeHtml(f.athleteA||'A') : (f.winner === 'B' ? escapeHtml(f.athleteB||'B') : 'Égalité');
+    const tieBreakLabel = f.tieBreak === 'accuracy' ? ' (départagé à l\'Accuracy)'
+      : (f.tieBreak === 'presentation' ? ' (départagé à la Présentation)' : '');
+    resultBlock = `
+      <div class="total-bar" style="margin-top:24px;flex-direction:column;align-items:flex-start;gap:4px;">
+        <span class="lab">Résultat — Side by side</span>
+        <span class="num" style="font-size:24px;">${f.winner ? '🏆 ' + winnerLabel + tieBreakLabel : '🤝 Égalité'}</span>
+        <span style="font-size:13px;color:#9fb0c8;">${escapeHtml(f.athleteA||'A')} : ${f.finalA.toFixed(1)} &nbsp;·&nbsp; ${escapeHtml(f.athleteB||'B')} : ${f.finalB.toFixed(1)}</span>
+      </div>
+      <button class="btn-calc" style="background:var(--gold);color:var(--navy-deep);margin-top:14px;" onclick="openStage()">🖥️ Afficher à l'écran central</button>
+    `;
+  }
+
+  return `
+    <a class="backlink" onclick="goHome()">← Changer de rôle</a>
+    ${renderModeToggle()}
+    <div class="card">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+        <button class="btn btn-plus" onclick="manualRefresh()">🔄 Rafraîchir maintenant</button>
+      </div>
+      <label class="field-label">Athlète A (🔴)</label>
+      <input type="text" id="athleteAField" placeholder="Ex : Awa Diop" value="${escapeHtml(athleteAInput)}" oninput="athleteAInput=this.value" style="margin-bottom:12px;">
+      <label class="field-label">Athlète B (🔵)</label>
+      <input type="text" id="athleteBField" placeholder="Ex : Fatou Ndiaye" value="${escapeHtml(athleteBInput)}" oninput="athleteBInput=this.value" style="margin-bottom:12px;">
+      <button class="btn-new" style="width:100%;" onclick="launchNewMatch()">Nouveau match</button>
+
+      <div class="section-title" style="margin-top:24px;color:#9098a3;">Notes des 5 juges — reçues en direct (${validatedCount}/5 validées)</div>
+      <div class="judges-grid">${slots}</div>
+
+      <button class="btn-calc" ${validatedCount < 5 ? 'disabled' : ''} onclick="calculateFinalPick()">
+        ${validatedCount < 5 ? `En attente des juges (${validatedCount}/5)` : 'Calculer le résultat'}
+      </button>
+
+      ${resultBlock}
+    </div>
+
+    ${renderChronoPanel()}
+    ${renderHistoryCard()}
+    ${renderDebugPanel()}
+  `;
+}
+
+function renderHistoryCard(){
+  const historyRows = history.map((h,idx) => `
+    <tr>
+      <td>${idx+1}</td>
+      <td>${escapeHtml(h.name || '—')}</td>
+      <td>${h.mode === 'sideBySide' ? `${typeof h.finalA==='number'?h.finalA.toFixed(1):'—'} – ${typeof h.finalB==='number'?h.finalB.toFixed(1):'—'}` : (typeof h.final === 'number' ? h.final.toFixed(1) : '—')}</td>
+    </tr>
+  `).join('');
+  return `
     <div class="card history">
       <div class="section-title" style="margin-top:0;">Historique (synchronisé)</div>
       ${history.length === 0 ? "<div class=\"empty\">Aucun athlète noté pour l'instant.</div>" : `
         <table>
-          <tr><th>#</th><th>Athlète</th><th>Note finale</th></tr>
+          <tr><th>#</th><th>Athlète / Match</th><th>Résultat</th></tr>
           ${historyRows}
         </table>
       `}
     </div>
-
-    ${renderDebugPanel()}
   `;
 }
 
@@ -1154,21 +1558,91 @@ function calculateFinal(){
   const kept = sorted.slice(1, sorted.length-1);
   const final = round1(kept.reduce((a,b)=>a+b,0) / kept.length);
 
-  writeFinal({ name: session.athleteName, final, kept, dropped });
+  writeFinal({ mode: 'single', name: session.athleteName, final, kept, dropped });
+}
+
+function calculateFinalPick(){
+  const scores = session.scores || {};
+  const entries = [1,2,3,4,5].map(i => scores['j'+i]).filter(s => s && s.validated && s.A && s.B);
+  if(entries.length < 5){
+    alert('Les 5 juges doivent valider leurs notes avant de calculer le résultat.');
+    return;
+  }
+  const trim = arr => {
+    const sorted = [...arr].sort((a,b)=>a-b);
+    const dropped = [sorted[0], sorted[sorted.length-1]];
+    const kept = sorted.slice(1, sorted.length-1);
+    return { final: round1(kept.reduce((a,b)=>a+b,0) / kept.length), kept, dropped };
+  };
+  const presentationOf = s => round1(s.puissance + s.rythme + s.expression);
+
+  const rA = trim(entries.map(s => s.A.total));
+  const rB = trim(entries.map(s => s.B.total));
+  const accA = trim(entries.map(s => s.A.precision));
+  const accB = trim(entries.map(s => s.B.precision));
+  const presA = trim(entries.map(s => presentationOf(s.A)));
+  const presB = trim(entries.map(s => presentationOf(s.B)));
+
+  let winner = null;
+  let tieBreak = null;
+  if(rA.final > rB.final) winner = 'A';
+  else if(rB.final > rA.final) winner = 'B';
+  else if(accA.final > accB.final){ winner = 'A'; tieBreak = 'accuracy'; }
+  else if(accB.final > accA.final){ winner = 'B'; tieBreak = 'accuracy'; }
+  else if(presA.final > presB.final){ winner = 'A'; tieBreak = 'presentation'; }
+  else if(presB.final > presA.final){ winner = 'B'; tieBreak = 'presentation'; }
+  // Si toujours égal après les deux départages, égalité totale (winner reste null).
+
+  const winnerName = winner === 'A' ? (session.athleteA || 'Athlète A')
+    : (winner === 'B' ? (session.athleteB || 'Athlète B') : 'Égalité');
+
+  writeFinal({
+    mode: 'sideBySide',
+    athleteA: session.athleteA,
+    athleteB: session.athleteB,
+    winner,
+    winnerName,
+    tieBreak,
+    finalA: rA.final, keptA: rA.kept, droppedA: rA.dropped,
+    finalB: rB.final, keptB: rB.kept, droppedB: rB.dropped,
+    accuracyA: accA.final, accuracyB: accB.final,
+    presentationA: presA.final, presentationB: presB.final
+  });
 }
 
 function openStage(){
   if(!session.final) return;
   const f = session.final;
-  document.getElementById('stageContent').innerHTML = `
-    <div class="athlete-name">${escapeHtml(f.name || 'Athlète')}</div>
-    <div class="final">${f.final.toFixed(1)}</div>
-    <div class="final-label">Note finale</div>
-    <div class="breakdown">
-      ${f.kept.map(v => `<span class="bd-item bd-kept">${v.toFixed(1)}</span>`).join('')}
-      ${f.dropped.map(v => `<span class="bd-item bd-dropped">${v.toFixed(1)}</span>`).join('')}
-    </div>
-  `;
+  let html;
+  if(f.mode === 'sideBySide'){
+    html = `
+      <div class="vs-row">
+        <div class="vs-side a ${f.winner==='A' ? 'winner' : ''}">
+          <div class="tag">🔴 Athlète A</div>
+          <div class="vname">${escapeHtml(f.athleteA || '—')}</div>
+          <div class="votes">${f.finalA.toFixed(1)}</div>
+        </div>
+        <div class="vs-mid">VS</div>
+        <div class="vs-side b ${f.winner==='B' ? 'winner' : ''}">
+          <div class="tag">🔵 Athlète B</div>
+          <div class="vname">${escapeHtml(f.athleteB || '—')}</div>
+          <div class="votes">${f.finalB.toFixed(1)}</div>
+        </div>
+      </div>
+      <div class="final-label" style="margin-top:34px;font-size:18px;">${f.winner ? '🏆 Vainqueur : ' + escapeHtml(f.winnerName) : '🤝 Égalité'}</div>
+    `;
+  } else {
+    html = `
+      <div class="athlete-name">${escapeHtml(f.name || 'Athlète')}</div>
+      <div class="final">${f.final.toFixed(1)}</div>
+      <div class="final-label">Note finale</div>
+      <div class="breakdown">
+        ${f.kept.map(v => `<span class="bd-item bd-kept">${v.toFixed(1)}</span>`).join('')}
+        ${f.dropped.map(v => `<span class="bd-item bd-dropped">${v.toFixed(1)}</span>`).join('')}
+      </div>
+    `;
+  }
+  document.getElementById('stageContent').innerHTML = html;
   document.getElementById('stage').classList.add('active');
 }
 function closeStage(){
