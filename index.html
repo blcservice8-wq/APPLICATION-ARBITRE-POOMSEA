@@ -444,10 +444,11 @@ function initFirebase(){
     firebase.initializeApp(firebaseConfig);
     db = firebase.firestore();
     // Force le mode "long polling" : certains réseaux mobiles/proxys coupent le flux
-    // temps réel (WebChannel) après le tout premier message. Ce réglage évite ce
-    // blocage silencieux (la 1ère lecture passe, mais plus rien après).
+    // temps réel (WebChannel) après le tout premier message, ou empêchent même la détection
+    // automatique de basculer correctement. On force donc le long-polling dès le départ
+    // plutôt que de laisser Firestore essayer d'abord le WebSocket (plus fiable en 4G/proxy).
     db.settings({
-      experimentalAutoDetectLongPolling: true,
+      experimentalForceLongPolling: true,
       merge: true
     });
     firebaseReady = true;
@@ -831,7 +832,7 @@ function listenJudges(){
   judgesRef().onSnapshot(doc => {
     const data = doc.exists ? doc.data() : {};
     for(let i=1;i<=5;i++){ judgeNames[i] = data['j'+i] || ''; }
-    render();
+    scheduleLiveRender();
   }, err => {
     console.error('Erreur Firestore (onSnapshot judges) :', err.code, err.message);
   });
@@ -871,11 +872,14 @@ function listenNotes(){
     session.scores = scores;
     debugInfo.lastNotesReadAt = new Date();
     debugInfo.notesSource = 'temps réel (onSnapshot)';
+    const wasHydrated = firstNotesSnapshotReceived;
     firstNotesSnapshotReceived = true;
     if(view === 'judge' && !judgeHydrated){
       hydrateJudgeFromSession();
     }
-    render();
+    // Première réception : rendu immédiat (l'utilisateur attend). Mises à jour suivantes :
+    // regroupées, pour ne pas interrompre une saisie en cours (ex. choix de catégorie).
+    wasHydrated ? scheduleLiveRender() : render();
   }, err => {
     console.error('Erreur Firestore (onSnapshot notes) :', err.code, err.message);
     lastFirestoreError = 'Lecture des notes bloquée : ' + err.code + ' — ' + err.message;
@@ -900,6 +904,20 @@ let debugInfo = {
   lastError: null
 };
 
+// Les mises à jour temps réel (notes des juges, session) peuvent arriver plusieurs fois
+// par seconde pendant la notation. Un render() immédiat à chaque fois recrée le DOM et
+// referme les menus déroulants (ex. choix de la catégorie) en plein milieu de la saisie.
+// On regroupe donc ces rafraîchissements "silencieux" avec un court délai, pour laisser
+// le temps de faire un choix tranquillement dans l'Espace Admin.
+let liveRenderTimeout = null;
+function scheduleLiveRender(){
+  if(liveRenderTimeout) clearTimeout(liveRenderTimeout);
+  liveRenderTimeout = setTimeout(() => {
+    liveRenderTimeout = null;
+    render();
+  }, 1200);
+}
+
 function applySessionData(data){
   session.mode = data.mode || 'single';
   session.phase = data.phase || '';
@@ -921,7 +939,7 @@ function applySessionData(data){
     judgeHydrated = true;
     writeJudgeScore();
   }
-  render();
+  scheduleLiveRender();
 }
 
 function startPollingFallback(){
@@ -941,7 +959,7 @@ function startPollingFallback(){
       session.scores = scores;
       debugInfo.lastNotesReadAt = new Date();
       debugInfo.notesSource = 'sondage de secours (toutes les 3s)';
-      render();
+      scheduleLiveRender();
     }).catch(err => {
       console.warn('Relecture périodique (notes) impossible :', err.code, err.message);
     });
@@ -1228,7 +1246,7 @@ function render(){
   // dans la vue principale ou dans la fenêtre Espace Admin.
   const active = document.activeElement;
   let focusId = null, selStart = null, selEnd = null;
-  if(active && active.id && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') &&
+  if(active && active.id && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT') &&
      (app.contains(active) || (adminOverlayEl && adminOverlayEl.contains(active)))){
     focusId = active.id;
     selStart = active.selectionStart;
@@ -1773,7 +1791,7 @@ function renderAdminSingle(){
       </div>
       <div>
         <label class="field-label">Catégorie</label>
-        <select class="field-select" onchange="athleteCategoryInput=this.value">${categoryOptionsHtml(athleteCategoryInput)}</select>
+        <select class="field-select" id="athleteCategoryField" onchange="athleteCategoryInput=this.value">${categoryOptionsHtml(athleteCategoryInput)}</select>
       </div>
 
       <div class="section-title" style="margin-top:24px;color:#9098a3;">Notes des 5 juges — reçues en direct (${validatedCount}/5 validées)</div>
@@ -1853,13 +1871,13 @@ function renderAdminSideBySide(){
           <label class="field-label">Athlète A (🔴)</label>
           <input type="text" id="athleteAField" placeholder="Ex : Awa Diop" value="${escapeHtml(athleteAInput)}" oninput="athleteAInput=this.value" style="margin-bottom:12px;">
           <label class="field-label">Catégorie A</label>
-          <select class="field-select" onchange="athleteACategoryInput=this.value">${categoryOptionsHtmlSBS(athleteACategoryInput)}</select>
+          <select class="field-select" id="athleteACategoryField" onchange="athleteACategoryInput=this.value">${categoryOptionsHtmlSBS(athleteACategoryInput)}</select>
         </div>
         <div>
           <label class="field-label">Athlète B (🔵)</label>
           <input type="text" id="athleteBField" placeholder="Ex : Fatou Ndiaye" value="${escapeHtml(athleteBInput)}" oninput="athleteBInput=this.value" style="margin-bottom:12px;">
           <label class="field-label">Catégorie B</label>
-          <select class="field-select" onchange="athleteBCategoryInput=this.value">${categoryOptionsHtmlSBS(athleteBCategoryInput)}</select>
+          <select class="field-select" id="athleteBCategoryField" onchange="athleteBCategoryInput=this.value">${categoryOptionsHtmlSBS(athleteBCategoryInput)}</select>
         </div>
       </div>
       <button class="btn-new" style="width:100%;" onclick="launchNewMatch()">Nouveau match</button>
