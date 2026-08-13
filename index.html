@@ -86,6 +86,12 @@
   .wrap-home .stage-card-row .space-card{min-height:auto;padding:26px;}
   .wrap-home .stage-card-row .space-icon{font-size:40px;margin-bottom:8px;}
   .wrap-home .stage-card-row .space-lbl{font-size:20px;}
+  .btn-second-screen{
+    display:block;width:100%;max-width:1240px;margin:12px auto 0;padding:12px 18px;
+    background:rgba(212,175,55,0.12);border:1px solid var(--gold);color:var(--gold);
+    border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;
+  }
+  .btn-second-screen:hover{background:rgba(212,175,55,0.22);}
   .space-card .space-icon, .space-card .space-lbl, .space-card .space-sub{position:relative;z-index:1;}
   .space-card .space-lbl{text-shadow:0 2px 6px rgba(0,0,0,0.6);}
   .space-icon{font-size:40px;margin-bottom:10px;}
@@ -106,6 +112,8 @@
   .admin-tab:hover{background:#f1f3f6;}
   .admin-tab.active{background:var(--navy);color:#fff;border-color:var(--navy);}
   .ping-panel-wrap{margin-top:16px;}
+  .admin-preview-box{background:#0c1524;border-radius:12px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px;}
+  .admin-preview-chrono{font-size:34px;font-weight:800;font-family:Georgia,serif;color:var(--gold);}
   .role-card{
     background:linear-gradient(160deg,rgba(255,255,255,0.05),rgba(255,255,255,0.01));
     border:1px solid var(--line);
@@ -392,6 +400,17 @@
   .jp-big-chrono.running{color:var(--gold);text-shadow:0 0 40px rgba(212,175,55,0.35);}
   @media(max-width:560px){ .jp-big-chrono{font-size:56px;margin-top:22px;} }
 
+  .stage-chrono-controls{display:flex;gap:12px;margin-top:26px;}
+  .stage-ctrl-btn{
+    border:none;border-radius:10px;padding:14px 22px;font-size:15px;font-weight:800;
+    cursor:pointer;color:#fff;
+  }
+  .stage-ctrl-btn.start{background:var(--green);}
+  .stage-ctrl-btn.pause{background:#8a6d1a;}
+  .stage-ctrl-btn.reset{background:#6b7280;}
+  .stage-ctrl-btn:disabled{opacity:.4;cursor:not-allowed;}
+  @media(max-width:560px){ .stage-chrono-controls{flex-direction:column;width:220px;} }
+
   /* ---------- ECRAN DE PROJECTION ---------- */
   .stage{display:none;}
   .stage.active{
@@ -656,6 +675,7 @@ function initFirebase(){
     listenNotes();
     listenJudges();
     listenPing();
+    listenChrono();
     startPollingFallback();
   }catch(e){
     console.error('Erreur d\'initialisation Firebase :', e);
@@ -674,6 +694,11 @@ let judgeHydrated = false; // true seulement une fois les données réelles du s
    ETAT GLOBAL
 ========================================================= */
 let view = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(AUTH_SESSION_KEY) === '1') ? 'home': 'login'; // login | home | judge | admin
+// Fenêtre dédiée ouverte sur un 2e écran (voir openStageOnSecondScreen) : va directement
+// sur l'Écran Central sans repasser par le choix d'espace.
+if(typeof location !== 'undefined' && new URLSearchParams(location.search).get('stage') === '1' && view !== 'login'){
+  view = 'stage';
+}
 let currentJudge = null; // 1..5
 
 // Etat de session partagé, reflet de Firestore session/current
@@ -790,8 +815,37 @@ function ensureChronoTick(){
 
 // Met à jour directement le texte des compteurs (sans passer par render) pour ne
 // jamais perdre le focus du champ "nom de l'athlète" pendant que le chrono tourne.
+let lastBeepedSecond = null;
+let audioCtx = null;
+function playChronoBeep(){
+  try{
+    if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.12);
+  }catch(e){ /* Audio indisponible (autoplay bloqué avant interaction) : on ignore. */ }
+}
+
 function updateChronoDisplays(){
-  const txt = formatChrono(chronoCurrentMs());
+  const ms = chronoCurrentMs();
+  const txt = formatChrono(ms);
+  if(chronoState.running){
+    const sec = Math.floor(ms / 1000);
+    if(sec !== lastBeepedSecond){
+      lastBeepedSecond = sec;
+      if(sec > 0) playChronoBeep();
+    }
+  } else {
+    lastBeepedSecond = null;
+  }
   const adminEl = document.getElementById('chronoAdminDisplay');
   if(adminEl) adminEl.textContent = txt;
   const stageEl = document.getElementById('stageChrono');
@@ -806,6 +860,8 @@ function updateChronoDisplays(){
     stageBigEl.textContent = txt;
     stageBigEl.classList.toggle('running', chronoState.running);
   }
+  const previewEl = document.getElementById('stageChronoCenter2');
+  if(previewEl) previewEl.textContent = txt;
 }
 
 function startChrono(){
@@ -813,6 +869,7 @@ function startChrono(){
   chronoState.running = true;
   chronoState.startEpoch = Date.now();
   ensureChronoTick();
+  writeChronoState();
   render();
 }
 function pauseChrono(){
@@ -820,6 +877,7 @@ function pauseChrono(){
   chronoState.elapsedMs = chronoCurrentMs();
   chronoState.running = false;
   chronoState.startEpoch = null;
+  writeChronoState();
   render();
 }
 function resetChrono(){
@@ -827,7 +885,40 @@ function resetChrono(){
   chronoState.startEpoch = null;
   chronoState.elapsedMs = 0;
   updateChronoDisplays();
+  writeChronoState();
   render();
+}
+
+// Écrit l'état du chrono dans Firestore pour que toutes les fenêtres ouvertes (Espace
+// Admin, Écran Central sur le 2e écran, autres appareils) restent synchronisées.
+let applyingRemoteChrono = false;
+function writeChronoState(){
+  if(!firebaseReady || applyingRemoteChrono) return;
+  chronoRef().set({
+    running: chronoState.running,
+    startEpoch: chronoState.startEpoch,
+    elapsedMs: chronoState.elapsedMs,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(err => reportWriteError('writeChronoState', err));
+}
+
+// Écoute permanente : reflète dans CETTE fenêtre tout démarrage/pause/reset déclenché
+// depuis une AUTRE fenêtre (Admin ↔ Écran Central), sans jamais rien écrire en retour.
+function listenChrono(){
+  chronoRef().onSnapshot(doc => {
+    if(!doc.exists) return;
+    const d = doc.data();
+    applyingRemoteChrono = true;
+    chronoState.running = !!d.running;
+    chronoState.startEpoch = d.startEpoch || null;
+    chronoState.elapsedMs = d.elapsedMs || 0;
+    applyingRemoteChrono = false;
+    if(chronoState.running) ensureChronoTick();
+    updateChronoDisplays();
+    if(!formEditingActive) render();
+  }, err => {
+    console.error('Erreur Firestore (chrono) :', err.code, err.message);
+  });
 }
 
 function renderChronoPanel(){
@@ -1084,6 +1175,11 @@ function notesRef(){
 }
 function pingRef(){
   return db.collection('poomsae').doc('ping_test');
+}
+// Document partagé du chrono : permet de le piloter et de le lire depuis n'importe
+// quelle fenêtre ouverte (Espace Admin ET Écran Central), sur le même PC ou un autre appareil.
+function chronoRef(){
+  return db.collection('poomsae').doc('chrono');
 }
 // Document indépendant et persistant (jamais réinitialisé par un nouveau match/athlète)
 // stockant le nom attribué à chacun des 5 juges.
@@ -1745,7 +1841,9 @@ function renderHome(){
         <div class="space-lbl">Écran Central</div>
         <div class="space-sub">Projection publique en direct</div>
       </div>
+      <button class="btn-second-screen" onclick="event.stopPropagation(); openStageOnSecondScreen();">🖥️➕ Ouvrir sur un 2ᵉ écran (même PC)</button>
     </div>
+    <p class="footer-note" style="margin-top:8px;">PC équipé de deux écrans (Windows, Mac ou Ubuntu) : garde l'Espace Admin sur l'écran 1 et projette l'Écran Central sur l'écran 2.</p>
     <p class="footer-note">Les notes des 5 juges arrivent automatiquement chez l'organisateur.<br>
     L'organisateur lance un nouvel athlète, et la note finale s'affiche en direct, prête à être projetée.</p>
   `;
@@ -2421,7 +2519,44 @@ function renderAdminTabJudges(){
 
 // Fenêtre "Écran & Chrono": écran public, raccourci écran central, chrono de passage.
 function renderAdminTabScreen(){
-  return `${renderStagePowerToggle()}${renderChronoPanel()}`;
+  return `
+    <div class="card">
+      <div class="section-title" style="margin-top:0;">🖥️➕ Deuxième écran (même PC)</div>
+      <p class="footer-note" style="text-align:left;margin-bottom:10px;">
+        PC équipé de deux écrans (Windows, Mac ou Ubuntu) : garde cet Espace Admin sur l'écran 1
+        et ouvre une fenêtre dédiée pour l'Écran Central à projeter sur l'écran 2.
+      </p>
+      <button class="btn btn-plus" onclick="openStageOnSecondScreen()">🖥️➕ Ouvrir l'Écran Central sur le 2ᵉ écran</button>
+    </div>
+    <div class="card">
+      <div class="section-title" style="margin-top:0;">👁️ Aperçu — synchronisé en direct avec l'Écran Central</div>
+      ${renderAdminStagePreview()}
+    </div>
+    ${renderStagePowerToggle()}${renderChronoPanel()}`;
+}
+
+// Miniature de ce qui est actuellement projeté sur l'Écran Central (nom/tableau + chrono),
+// mise à jour en direct par le même tic que le grand chrono (updateChronoDisplays).
+function renderAdminStagePreview(){
+  if(session.mode === 'sideBySide' && (session.athleteA || session.athleteB)){
+    const judgeNums = Array.from({length:7}, (_,i) => `<div class="jp-num">${i+1}</div>`).join('');
+    return `
+      <div class="admin-preview-box">
+        <div class="jp-board" style="max-width:520px;">
+          <div class="jp-col red"><div class="jp-name" style="font-size:18px;">${escapeHtml(session.athleteA || 'Athlète A')}</div></div>
+          <div class="jp-judges" style="flex-basis:40px;">${judgeNums}</div>
+          <div class="jp-col blue"><div class="jp-name" style="font-size:18px;">${escapeHtml(session.athleteB || 'Athlète B')}</div></div>
+        </div>
+        <div class="admin-preview-chrono" id="stageChronoCenter2">${formatChrono(chronoCurrentMs())}</div>
+      </div>
+    `;
+  }
+  return `
+    <div class="admin-preview-box">
+      <div style="font-size:20px;font-weight:800;font-family:Georgia,serif;color:#fff;">${session.athleteName ? escapeHtml(session.athleteName) : "En attente de l'athlète"}</div>
+      <div class="admin-preview-chrono" id="stageChronoCenter2">${formatChrono(chronoCurrentMs())}</div>
+    </div>
+  `;
 }
 
 // Fenêtre "Historiques": tableau des matchs passés + réinitialisation + impression.
@@ -2935,6 +3070,44 @@ function goStage(){
   render();
 }
 
+// Ouvre l'Écran Central dans une VRAIE fenêtre de navigateur séparée, positionnée sur le
+// 2e écran quand c'est possible, pour un même PC (Windows, Mac ou Ubuntu) équipé de deux
+// écrans : l'admin garde l'Espace Admin sur l'écran 1 et projette cette fenêtre sur l'écran 2.
+async function openStageOnSecondScreen(){
+  const url = location.origin + location.pathname + '?stage=1';
+
+  // Chrome/Edge (Windows, Mac, Linux) : Window Management API — détecte et cible le 2e écran.
+  if(window.getScreenDetails){
+    try{
+      const perm = await navigator.permissions.query({ name: 'window-management' }).catch(() => null);
+      const details = await window.getScreenDetails();
+      const screens = details.screens || [];
+      const external = screens.find(s => !s.isPrimary) || screens[1];
+      if(external){
+        const w = window.open(
+          url, 'stageWindow',
+          `left=${external.left},top=${external.top},width=${external.availWidth},height=${external.availHeight}`
+        );
+        if(w){
+          setTimeout(() => { try{ w.moveTo(external.left, external.top); w.resizeTo(external.availWidth, external.availHeight); }catch(e){} }, 300);
+          return;
+        }
+      }
+    }catch(e){
+      // Permission refusée ou API indisponible : on bascule sur l'ouverture simple ci-dessous.
+    }
+  }
+
+  // Sans détection possible (Firefox/Safari, ou permission refusée) : ouverture d'une
+  // fenêtre plein format que l'admin glisse lui-même vers l'écran 2, puis agrandit (□).
+  const w = window.open(url, 'stageWindow', 'width=1280,height=800,left=100,top=100');
+  if(!w){
+    alert("Le navigateur a bloqué l'ouverture de la fenêtre (bloqueur de popup ?). Autorise les popups pour ce site, puis réessaie.");
+    return;
+  }
+  alert("Fenêtre ouverte. Glisse-la sur ton 2e écran, puis clique sur □ (Agrandir) dans sa barre pour le plein écran.");
+}
+
 // Contenu affiché derrière l'overlay plein écran, au cas où l'overlay serait fermé.
 function renderStagePage(){
   return `
@@ -2950,11 +3123,25 @@ function renderStagePage(){
 
 // Met à jour l'overlay plein écran selon l'état courant (chrono ou résultat final),
 // sans changer de vue ni relancer render() en boucle.
+// Permet à l'admin de piloter le chrono directement depuis la fenêtre Écran Central
+// (démarrer, pause, réinitialiser) — synchronisé en direct avec l'Espace Admin.
+function renderStageChronoControls(){
+  return `
+    <div class="stage-chrono-controls">
+      <button class="stage-ctrl-btn start" onclick="startChrono()" ${chronoState.running ? 'disabled' : ''}>▶ ${chronoState.elapsedMs > 0 && !chronoState.running ? 'Reprendre' : 'Démarrer'}</button>
+      <button class="stage-ctrl-btn pause" onclick="pauseChrono()" ${chronoState.running ? '' : 'disabled'}>⏸ Pause</button>
+      <button class="stage-ctrl-btn reset" onclick="resetChrono()">↺ Réinitialiser</button>
+    </div>
+  `;
+}
+
 function syncStageDisplay(){
   setStageActive(true);
+  const stageEl = document.getElementById('stage');
   if(session.final){
     openStage();
   } else if(session.mode === 'sideBySide' && (session.athleteA || session.athleteB)){
+    if(stageEl) stageEl.classList.add('has-scoreboard');
     const judgeNums = Array.from({length:7}, (_,i) => `<div class="jp-num">${i+1}</div>`).join('');
     document.getElementById('stageContent').innerHTML = `
       <div class="jp-board">
@@ -2964,18 +3151,22 @@ function syncStageDisplay(){
       </div>
       <div class="final-label" style="margin-top:20px;">Temps d'exécution</div>
       <div class="jp-big-chrono" id="stageBigChrono">0:00.0</div>
+      ${renderStageChronoControls()}
     `;
     ensureChronoTick();
     updateChronoDisplays();
   } else if(session.athleteName || session.athleteA || session.athleteB){
+    if(stageEl) stageEl.classList.add('has-scoreboard');
     document.getElementById('stageContent').innerHTML = `
       <div class="athlete-name">${session.athleteName ? escapeHtml(session.athleteName) : "En attente de l'athlète"}</div>
       <div class="final-label" style="margin-top:-18px;margin-bottom:10px;">Temps d'exécution</div>
       <div class="jp-big-chrono" id="stageBigChrono">0:00.0</div>
+      ${renderStageChronoControls()}
     `;
     ensureChronoTick();
     updateChronoDisplays();
   } else {
+    if(stageEl) stageEl.classList.remove('has-scoreboard');
     document.getElementById('stageContent').innerHTML = `<div class="waiting">En attente du prochain athlète…</div>`;
   }
 }
