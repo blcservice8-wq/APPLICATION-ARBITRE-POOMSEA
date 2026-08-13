@@ -373,6 +373,17 @@
   .sb-poomsae.dim{opacity:.45;}
   .sb-winnerbar{margin-top:22px;padding:14px 30px;border-radius:12px;background:rgba(212,175,55,0.14);border:1px solid var(--gold);color:var(--gold);font-size:20px;font-weight:800;}
 
+  /* ---------- Tableau side-by-side pendant le temps d'exécution (avant les notes) ---------- */
+  .jp-board{display:flex;width:100%;max-width:860px;border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,0.18);box-shadow:0 16px 40px rgba(0,0,0,0.4);}
+  .jp-col{flex:1;min-height:180px;padding:30px 20px;display:flex;align-items:center;justify-content:center;text-align:center;}
+  .jp-col.red{background:linear-gradient(160deg,#8a1226,#c8102e);}
+  .jp-col.blue{background:linear-gradient(160deg,#003158,#0050a0);}
+  .jp-name{color:#fff;font-size:24px;font-weight:800;font-family:Georgia,serif;line-height:1.3;}
+  .jp-judges{flex:0 0 64px;background:#0a1220;display:flex;flex-direction:column;}
+  .jp-num{flex:1;display:flex;align-items:center;justify-content:center;color:var(--gold);font-size:16px;font-weight:800;border-bottom:1px solid rgba(255,255,255,0.08);}
+  .jp-num:last-child{border-bottom:none;}
+  @media(max-width:560px){ .jp-col{padding:20px 10px;min-height:140px;} .jp-name{font-size:18px;} .jp-judges{flex-basis:44px;} .jp-num{font-size:13px;} }
+
   /* ---------- ECRAN DE PROJECTION ---------- */
   .stage{display:none;}
   .stage.active{
@@ -2930,6 +2941,18 @@ function syncStageDisplay(){
   setStageActive(true);
   if(session.final){
     openStage();
+  } else if(session.mode === 'sideBySide' && (session.athleteA || session.athleteB)){
+    const judgeNums = Array.from({length:7}, (_,i) => `<div class="jp-num">${i+1}</div>`).join('');
+    document.getElementById('stageContent').innerHTML = `
+      <div class="jp-board">
+        <div class="jp-col red"><div class="jp-name">${escapeHtml(session.athleteA || 'Athlète A')}</div></div>
+        <div class="jp-judges">${judgeNums}</div>
+        <div class="jp-col blue"><div class="jp-name">${escapeHtml(session.athleteB || 'Athlète B')}</div></div>
+      </div>
+      <div class="final-label" style="margin-top:20px;">Temps d'exécution</div>
+    `;
+    ensureChronoTick();
+    updateChronoDisplays();
   } else if(session.athleteName || session.athleteA || session.athleteB){
     document.getElementById('stageContent').innerHTML = `
       <div class="athlete-name">${session.athleteName ? escapeHtml(session.athleteName) : "En attente de l'athlète"}</div>
