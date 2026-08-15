@@ -606,6 +606,19 @@ const AUTH_SESSION_KEY = 'poomsae_auth_ok';
 const ADMIN_PASSWORD_HASH = '6051fc84a7a0d74c225fb18a496b09952da5642e60723ecae543298edd7d82d6'; // = "admin2026"
 const ADMIN_SESSION_KEY = 'poomsae_admin_ok';
 
+/* =========================================================
+   ACCES PARAMETRES — troisième mot de passe indépendant, requis en plus du
+   login général et du mot de passe Espace Admin pour ouvrir l'onglet
+   "Paramètres" (diagnostic technique + test de connexion), qui expose des
+   détails internes sensibles (structure Firestore, identifiants d'appareils).
+   Même méthode que ci-dessus pour changer le mot de passe.
+========================================================= */
+const SETTINGS_PASSWORD_HASH = '290438f3725be3a463db03d8580001aa1eab073fb5982340e2a8b347b7234a68'; // = "parametres2026"
+const SETTINGS_SESSION_KEY = 'poomsae_settings_ok';
+let settingsPasswordInput = '';
+let settingsError = '';
+let settingsChecking = false;
+
 let loginUsernameInput = '';
 let loginPasswordInput = '';
 let loginError = '';
@@ -637,9 +650,27 @@ async function attemptLogin(){
 function logout(){
   sessionStorage.removeItem(AUTH_SESSION_KEY);
   sessionStorage.removeItem(ADMIN_SESSION_KEY);
+  sessionStorage.removeItem(SETTINGS_SESSION_KEY);
   adminUnlocked = false;
+  settingsUnlocked = false;
   adminModalOpen = false;
   view = 'login';
+  render();
+}
+
+async function attemptSettingsUnlock(){
+  settingsError = '';
+  settingsChecking = true;
+  render();
+  const passHash = await sha256Hex(settingsPasswordInput);
+  settingsChecking = false;
+  if(passHash === SETTINGS_PASSWORD_HASH){
+    sessionStorage.setItem(SETTINGS_SESSION_KEY, '1');
+    settingsUnlocked = true;
+    settingsPasswordInput = '';
+  } else {
+    settingsError = 'Mot de passe incorrect.';
+  }
   render();
 }
 
@@ -1777,6 +1808,8 @@ function writeFinal(finalObj){
         typePhase,
         category: `${session.athleteACategory || '—'} / ${session.athleteBCategory || '—'}`,
         resultLabel: `${finalObj.finalA.toFixed(1)} – ${finalObj.finalB.toFixed(1)}`,
+        accuracyLabel: `${finalObj.accuracyA.toFixed(1)} – ${finalObj.accuracyB.toFixed(1)}`,
+        presentationLabel: `${finalObj.presentationA.toFixed(1)} – ${finalObj.presentationB.toFixed(1)}`,
         winnerName: finalObj.winner ? finalObj.winnerName : '—',
         loserName: finalObj.winner
           ? (finalObj.winner === 'A' ? finalObj.athleteB : finalObj.athleteA)
@@ -1789,11 +1822,13 @@ function writeFinal(finalObj){
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       }
     : {
-        mode: 'single',
+        mode: finalObj.mode,
         name: finalObj.name,
         typePhase,
         category: session.athleteCategory || '—',
         resultLabel: finalObj.final.toFixed(1),
+        accuracyLabel: typeof finalObj.accuracy === 'number' ? finalObj.accuracy.toFixed(1) : '—',
+        presentationLabel: typeof finalObj.presentation === 'number' ? finalObj.presentation.toFixed(1) : '—',
         winnerName: finalObj.name,
         loserName: '—',
         final: finalObj.final,
@@ -2026,6 +2061,7 @@ function renderRefereeAnnouncements(){
 
 let adminModalOpen = false;
 let adminUnlocked = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(ADMIN_SESSION_KEY) === '1');
+let settingsUnlocked = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SETTINGS_SESSION_KEY) === '1');
 let adminPasswordInput = '';
 let adminLoginError = '';
 let adminChecking = false;
@@ -2703,6 +2739,25 @@ function renderAdminTabHistory(){
 
 // Fenêtre "Paramètres": diagnostic technique + test de connexion PC ↔ téléphone.
 function renderAdminTabSettings(){
+  if(!settingsUnlocked){
+    return `
+      <div class="card" style="max-width:420px;margin:0 auto;text-align:center;">
+        <div class="section-title" style="margin-top:0;">🔒 Onglet protégé</div>
+        <p class="footer-note" style="margin-bottom:16px;">
+          Le diagnostic technique et le test de connexion contiennent des détails internes
+          sensibles. Saisis le mot de passe Paramètres pour y accéder.
+        </p>
+        <input type="password" id="settingsPasswordField" placeholder="Mot de passe Paramètres" value="${escapeHtml(settingsPasswordInput)}"
+          onfocus="formEditingActive=true" onblur="formEditingActive=false"
+          oninput="settingsPasswordInput=this.value" onkeydown="if(event.key==='Enter') attemptSettingsUnlock();"
+          style="width:100%;box-sizing:border-box;margin-bottom:12px;">
+        ${settingsError ? `<p style="color:#c8102e;font-size:13px;margin-bottom:12px;">${escapeHtml(settingsError)}</p>` : ''}
+        <button class="btn-new" style="width:100%;" onclick="attemptSettingsUnlock()" ${settingsChecking ? 'disabled' : ''}>
+          ${settingsChecking ? 'Vérification…' : '🔓 Déverrouiller'}
+        </button>
+      </div>
+    `;
+  }
   return `${renderDebugPanel()}<div class="ping-panel-wrap">${renderPingPanel()}</div>`;
 }
 
@@ -2844,6 +2899,9 @@ function launchNewMatch(){
     return;
   }
   startNewMatch(a, athleteACategoryInput, athleteAWeightInput, b, athleteBCategoryInput, athleteBWeightInput, poomsaeR1Input, poomsaeR2Input);
+ // Automatisation: une fois le match lancé, on bascule directement sur l'onglet
+ // "Espace Juges" pour suivre l'arrivée des notes sans clic supplémentaire.
+  setAdminTab('judges');
 }
 
 function setSbsCategory(value){
@@ -2942,55 +3000,102 @@ function renderAdminSideBySide(){
 // Supprime tout l'historique synchronisé (jusqu'à 500 entrées par lot) après confirmation.
 function resetHistory(){
   if(!firebaseReady) return;
-  const ok = confirm("Réinitialiser l'historique effacera définitivement tous les matchs enregistrés.\n\nContinuer ?");
+  const ok = confirm("Réinitialiser l'historique effacera définitivement tous les matchs enregistrés et fera repartir la numérotation à 1.\n\nContinuer ?");
   if(!ok) return;
   historyRef().limit(500).get().then(snap => {
     const batch = db.batch();
     snap.forEach(d => batch.delete(d.ref));
+   // Remet le compteur de numéros de match à zéro : le prochain match sera le n°1.
+    batch.set(matchCounterRef(), { matchNumber: 0 }, {merge:false});
     return batch.commit();
   }).then(() => {
     history = [];
+    rankingHistory = [];
+    rankingLoaded = false;
     render();
   }).catch(err => reportWriteError('resetHistory', err));
 }
 
 // Ouvre une fenêtre imprimable avec le tableau d'historique actuellement chargé.
+// Imprime (et permet d'enregistrer en PDF via la boîte de dialogue d'impression du
+// navigateur) l'historique COMPLET des matchs, ainsi que le classement par catégorie
+// et les meilleurs troisièmes toutes catégories confondues.
 function printHistory(){
-  const rows = history.map(h => `
-    <tr>
-      <td>${h.matchNumber != null ? h.matchNumber : '—'}</td>
-      <td>${escapeHtml(h.name || '—')}</td>
-      <td>${escapeHtml(h.typePhase || (COMPETITION_TYPE_LABEL[h.mode] || h.mode || '—'))}</td>
-      <td>${escapeHtml(h.resultLabel != null ? String(h.resultLabel) : (typeof h.final === 'number' ? h.final.toFixed(1) : '—'))}</td>
-      <td>${escapeHtml(h.winnerName || '—')}</td>
-      <td>${escapeHtml(h.loserName || '—')}</td>
-    </tr>
-  `).join('');
-  const html = `
-    <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
-    <title>Historique — Ligue de Dakar Taekwondo</title>
-    <style>
-      body{font-family:Arial,sans-serif;padding:24px;color:#111;}
-      h1{font-size:18px;margin-bottom:4px;}
-      p{font-size:12px;color:#555;margin-top:0;}
-      table{width:100%;border-collapse:collapse;margin-top:14px;}
-      th,td{border:1px solid #ccc;padding:6px 8px;font-size:12px;text-align:left;}
-      th{background:#f0f0f0;}
-    </style></head><body>
-    <h1>Historique — Ligue de Dakar Taekwondo</h1>
-    <p>Imprimé le ${new Date().toLocaleString('fr-FR')}</p>
-    <table>
-      <tr><th>N°</th><th>Athlète(s)</th><th>Type — Phase</th><th>Résultat (pts)</th><th>Vainqueur</th><th>Vaincu</th></tr>
-      ${rows || '<tr><td colspan="6">Pas encore de match enregistre.</td></tr>'}
-    </table>
-    </body></html>
-  `;
-  const w = window.open('', '_blank');
-  if(!w){ alert("Impossible d'ouvrir la fenêtre d'impression (bloqueur de popup ?)."); return; }
-  w.document.write(html);
-  w.document.close();
-  w.focus();
-  w.print();
+  const build = (fullHistory) => {
+    const rows = fullHistory.map(h => `
+      <tr>
+        <td>${h.matchNumber != null ? h.matchNumber : '—'}</td>
+        <td>${escapeHtml(h.name || '—')}</td>
+        <td>${escapeHtml(h.typePhase || (COMPETITION_TYPE_LABEL[h.mode] || h.mode || '—'))}</td>
+        <td>${escapeHtml(h.resultLabel != null ? String(h.resultLabel) : (typeof h.final === 'number' ? h.final.toFixed(1) : '—'))}</td>
+        <td>${escapeHtml(h.accuracyLabel || '—')}</td>
+        <td>${escapeHtml(h.presentationLabel || '—')}</td>
+        <td>${escapeHtml(h.winnerName || '—')}</td>
+        <td>${escapeHtml(h.loserName || '—')}</td>
+      </tr>
+    `).join('');
+
+    const savedRankingHistory = rankingHistory;
+    rankingHistory = fullHistory; // réutilise buildCategoryRankings() avec le jeu complet
+    const byCategory = buildCategoryRankings();
+    rankingHistory = savedRankingHistory;
+    const categories = Object.keys(byCategory).filter(c => c && c !== '—' && c !== '— / —').sort();
+    const medals = ['1er','2e','3e'];
+    const categoryTables = categories.map(cat => `
+      <h2>Classement — ${escapeHtml(cat)}</h2>
+      <table>
+        <tr><th>Rang</th><th>Athlète</th><th>Points</th><th>Match</th></tr>
+        ${byCategory[cat].map((p,i) => `<tr><td>${medals[i]||(i+1)}</td><td>${escapeHtml(p.name)}</td><td>${p.points.toFixed(1)}</td><td>${escapeHtml(p.typePhase||'—')}</td></tr>`).join('')}
+      </table>
+    `).join('');
+    const thirds = categories.map(cat => ({cat, perf: byCategory[cat][2]})).filter(x => x.perf).sort((a,b)=>b.perf.points-a.perf.points);
+    const thirdsTable = thirds.length ? `
+      <h2>Meilleurs troisièmes — toutes catégories confondues</h2>
+      <table>
+        <tr><th>Rang</th><th>Athlète</th><th>Catégorie</th><th>Points</th><th>Match</th></tr>
+        ${thirds.map((x,i) => `<tr><td>${i+1}</td><td>${escapeHtml(x.perf.name)}</td><td>${escapeHtml(x.cat)}</td><td>${x.perf.points.toFixed(1)}</td><td>${escapeHtml(x.perf.typePhase||'—')}</td></tr>`).join('')}
+      </table>
+    ` : '';
+
+    const html = `
+      <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+      <title>Historique — Ligue de Dakar Taekwondo</title>
+      <style>
+        body{font-family:Arial,sans-serif;padding:24px;color:#111;}
+        h1{font-size:18px;margin-bottom:4px;}
+        h2{font-size:15px;margin-top:26px;}
+        p{font-size:12px;color:#555;margin-top:0;}
+        table{width:100%;border-collapse:collapse;margin-top:10px;}
+        th,td{border:1px solid #ccc;padding:6px 8px;font-size:12px;text-align:left;}
+        th{background:#f0f0f0;}
+        @media print{ h2{page-break-before:auto;} }
+      </style></head><body>
+      <h1>Historique — Ligue de Dakar Taekwondo</h1>
+      <p>Imprimé le ${new Date().toLocaleString('fr-FR')} — ${fullHistory.length} match(s) au total</p>
+      <table>
+        <tr><th>N°</th><th>Athlète(s)</th><th>Type — Phase</th><th>Résultat (pts)</th><th>Précision</th><th>Présentation</th><th>Vainqueur</th><th>Vaincu</th></tr>
+        ${rows || '<tr><td colspan="8">Pas encore de match enregistré.</td></tr>'}
+      </table>
+      ${thirdsTable}
+      ${categoryTables}
+      </body></html>
+    `;
+    const w = window.open('', '_blank');
+    if(!w){ alert("Impossible d'ouvrir la fenêtre d'impression (bloqueur de popup ?)."); return; }
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    // L'utilisateur peut choisir "Enregistrer au format PDF" comme destination
+    // dans la boîte de dialogue d'impression du navigateur.
+    w.print();
+  };
+
+  if(rankingLoaded){
+    build(rankingHistory);
+  } else {
+    historyRef().limit(500).get().then(snap => build(snap.docs.map(d => d.data())))
+      .catch(err => { reportWriteError('printHistory', err); build(history); });
+  }
 }
 
 // Charge (une fois) un plus grand échantillon de l'historique pour construire le
@@ -3100,6 +3205,8 @@ function renderHistoryCard(){
       <td>${escapeHtml(h.name || '—')}</td>
       <td>${escapeHtml(h.typePhase || (COMPETITION_TYPE_LABEL[h.mode] || h.mode || '—'))}</td>
       <td>${escapeHtml(h.resultLabel != null ? String(h.resultLabel) : (typeof h.final === 'number' ? h.final.toFixed(1) : '—'))}</td>
+      <td>${escapeHtml(h.accuracyLabel || '—')}</td>
+      <td>${escapeHtml(h.presentationLabel || '—')}</td>
       <td>${escapeHtml(h.winnerName || '—')}</td>
       <td>${escapeHtml(h.loserName || '—')}</td>
     </tr>
@@ -3110,7 +3217,7 @@ function renderHistoryCard(){
       ${history.length === 0 ? "<div class=\"empty\">Aucun athlète noté pour l'instant.</div>" : `
         <div style="overflow-x:auto;">
         <table>
-          <tr><th>N°</th><th>Athlète(s)</th><th>Type — Phase</th><th>Résultat (pts)</th><th>Vainqueur</th><th>Vaincu</th></tr>
+          <tr><th>N°</th><th>Athlète(s)</th><th>Type — Phase</th><th>Résultat (pts)</th><th>Précision</th><th>Présentation</th><th>Vainqueur</th><th>Vaincu</th></tr>
           ${historyRows}
         </table>
         </div>
@@ -3176,21 +3283,41 @@ function launchNewAthlete(){
     return;
   }
   startNewAthlete(name, athleteCategoryInput, athleteWeightInput, poomsaeR1Input, poomsaeR2Input);
+ // Automatisation: une fois l'athlète lancé, on bascule directement sur l'onglet
+ // "Espace Juges" pour suivre l'arrivée des notes sans clic supplémentaire.
+  setAdminTab('judges');
 }
 
 function calculateFinal(){
   const scores = session.scores || {};
-  const valid = [1,2,3,4,5].map(i => scores['j'+i]).filter(s => s && s.validated).map(s => s.total);
-  if(valid.length < 5){
+  const validEntries = [1,2,3,4,5].map(i => scores['j'+i]).filter(s => s && s.validated);
+  if(validEntries.length < 5){
     alert('Les 5 juges doivent valider leur note avant le calcul final.');
     return;
   }
-  const sorted = [...valid].sort((a,b)=>a-b);
-  const dropped = [sorted[0], sorted[sorted.length-1]];
-  const kept = sorted.slice(1, sorted.length-1);
-  const final = round1(kept.reduce((a,b)=>a+b,0) / kept.length);
+  const trim = arr => {
+    const sorted = [...arr].sort((a,b)=>a-b);
+    const dropped = [sorted[0], sorted[sorted.length-1]];
+    const kept = sorted.slice(1, sorted.length-1);
+    return { final: round1(kept.reduce((a,b)=>a+b,0) / kept.length), kept, dropped };
+  };
 
-  writeFinal({ mode: session.mode === 'freestyle' ? 'freestyle' : 'single', name: session.athleteName, final, kept, dropped });
+  const r = trim(validEntries.map(s => s.total));
+
+  let accuracy = null, presentation = null;
+  if(session.mode === 'freestyle'){
+    accuracy = trim(validEntries.map(s => freestyleTechniqueTotal(s.freestyle || {}))).final;
+    presentation = trim(validEntries.map(s => clamp(round1((s.freestyle && s.freestyle.presentation) || 0), 0, 4.0))).final;
+  } else {
+    accuracy = trim(validEntries.map(s => s.precision)).final;
+    presentation = trim(validEntries.map(s => round1(s.puissance + s.rythme + s.expression))).final;
+  }
+
+  writeFinal({
+    mode: session.mode === 'freestyle' ? 'freestyle' : 'single',
+    name: session.athleteName, final: r.final, kept: r.kept, dropped: r.dropped,
+    accuracy, presentation
+  });
 }
 
 function calculateFinalPick(){
