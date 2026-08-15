@@ -232,6 +232,23 @@
   .precision-value.blue .num{color:var(--blue);}
   @media (max-width:520px){ .precision-row{grid-template-columns:1fr 1fr;grid-template-rows:auto auto;} }
 
+  /* ---------- Précision mode Cut-Off: note réduite + gros boutons + correction ---------- */
+  .precision-row-cutoff{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:stretch;margin-bottom:20px;}
+  .precision-value-small{border-radius:10px;background:#fff;border:1px solid #eceef1;display:flex;align-items:center;justify-content:center;min-width:100px;}
+  .precision-value-small .num{font-size:26px;font-weight:800;font-family:Georgia,serif;}
+  .precision-value-small.red .num{color:var(--red);}
+  .precision-btns-col{display:flex;flex-direction:column;gap:8px;}
+  .precision-btn-big{border:none;border-radius:10px;padding:20px 22px;font-size:18px;font-weight:800;cursor:pointer;color:#fff;min-width:88px;}
+  .precision-btn-big.red.minus{background:var(--red);}
+  .precision-btn-big.red.minus:hover{background:#a30d24;}
+  .precision-btn-big.red.plus{background:#2e7d4f;}
+  .precision-btn-big.red.plus:hover{background:#245f3c;}
+  @media (max-width:560px){
+    .precision-row-cutoff{grid-template-columns:1fr;}
+    .precision-btns-col{flex-direction:row;}
+    .precision-btn-big{flex:1;padding:16px 8px;}
+  }
+
   /* ---------- Colonnes de critères (choix de note) ---------- */
   .criteria-columns{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
   @media (max-width:680px){ .criteria-columns{grid-template-columns:1fr;} }
@@ -500,6 +517,10 @@
   .history table{width:100%;border-collapse:collapse;font-size:13px;}
   .history th{text-align:left;color:#9098a3;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.05em;padding:6px 8px;border-bottom:1px solid #eceef1;}
   .history td{padding:8px;border-bottom:1px solid #f1f2f4;}
+  .ranking-table{width:100%;border-collapse:collapse;font-size:13px;}
+  .ranking-table th{text-align:left;color:#9098a3;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.05em;padding:6px 8px;border-bottom:1px solid #eceef1;}
+  .ranking-table td{padding:8px;border-bottom:1px solid #f1f2f4;}
+  .ranking-table tr.rank-third{background:rgba(212,175,55,0.12);font-weight:700;}
   .history .empty{color:#9098a3;font-size:13px;padding:14px 0;}
 
   .footer-note{text-align:center;color:#5d6b85;font-size:12px;margin-top:34px;line-height:1.6;}
@@ -1759,6 +1780,18 @@ function render(){
 
   app.classList.toggle('wrap-wide', view === 'home');
 
+ // Préserve la position de défilement à travers le rafraîchissement : sans ça, chaque
+ // mise à jour synchronisée (note d'un autre juge, chrono, etc.) faisait "sauter" la
+ // page en haut pendant que le juge notait/défilait sur son téléphone.
+  const scrollY = window.scrollY;
+  const adminScrollTop = adminOverlayEl ? adminOverlayEl.scrollTop : 0;
+ // Préserve aussi le défilement HORIZONTAL de chaque ligne de score (2.0 → 0.5) : sans ça,
+ // une note reçue d'un autre juge recréait ces lignes et les remettait à 2.0 tout à gauche.
+  const hScrolls = {};
+  document.querySelectorAll('.score-options[data-scroll-key]').forEach(el => {
+    hScrolls[el.getAttribute('data-scroll-key')] = el.scrollLeft;
+  });
+
   if(view === 'login'){
     app.innerHTML = renderLogin();
   } else if(view === 'home'){
@@ -1796,11 +1829,33 @@ function render(){
     }
   }
 
- // Centre automatiquement la valeur sélectionnée dans chaque menu de score
- // horizontal, pour que l'arbitre la voie sans avoir à défiler manuellement.
-  document.querySelectorAll('.score-opt.active').forEach(el => {
-    el.scrollIntoView({ block: 'nearest', inline: 'center' });
-  });
+ // Restaure le défilement sauvegardé (sauf si un champ vient d'être focus, auquel cas le
+ // navigateur gère déjà le scroll pour amener ce champ en vue). On utilise un double
+ // requestAnimationFrame pour agir APRÈS que le navigateur ait fini de peindre le nouveau
+ // contenu (un simple appel synchrone pouvait être écrasé par le rendu en cours).
+  const restoreScroll = () => {
+    if(!focusId){
+      window.scrollTo(0, scrollY);
+      document.documentElement.scrollTop = scrollY;
+      document.body.scrollTop = scrollY;
+      if(adminOverlayEl) adminOverlayEl.scrollTop = adminScrollTop;
+    }
+    document.querySelectorAll('.score-options[data-scroll-key]').forEach(el => {
+      const key = el.getAttribute('data-scroll-key');
+      if(key in hScrolls){
+        // L'utilisateur avait déjà positionné cette ligne : on restaure exactement ça.
+        el.scrollLeft = hScrolls[key];
+      } else {
+        // Première apparition de cette ligne (nouvel athlète) : centre la valeur sélectionnée,
+        // horizontalement UNIQUEMENT — jamais via scrollIntoView, qui bouge aussi la page entière.
+        const active = el.querySelector('.score-opt.active');
+        if(active){
+          el.scrollLeft = Math.max(0, active.offsetLeft - (el.clientWidth / 2) + (active.clientWidth / 2));
+        }
+      }
+    });
+  };
+  requestAnimationFrame(() => requestAnimationFrame(restoreScroll));
 }
 
 function renderHome(){
@@ -2225,7 +2280,7 @@ function renderScoreOptions(side,key,label){
   const options = [2.0,1.9,1.8,1.7,1.6,1.5,1.4,1.3,1.2,1.1,1.0,0.9,0.8,0.7,0.6,0.5];
   return `
     <div class="crit-label">${label}</div>
-    <div class="score-options">
+    <div class="score-options" data-scroll-key="sbs-${side}-${key}">
       ${options.map(opt => `<button class="score-opt ${color} ${val === opt ? 'active' : ''}" onclick="setPresentationSide('${side}','${key}',${opt})">${opt.toFixed(1)}</button>`).join('')}
     </div>
   `;
@@ -2276,11 +2331,15 @@ function resetAllScoresSide(){
 function renderPrecisionRowSingle(){
   const pass = currentPass(judgeState);
   return `
-    <div class="precision-row" style="grid-template-columns:1fr auto;">
-      <div class="precision-value red"><span class="num">${pass.precision.toFixed(1)}</span></div>
-      <div style="display:flex;flex-direction:column;gap:8px;">
-        <button class="precision-btn red" onclick="faultePrecision(0.1)">−0.1</button>
-        <button class="precision-btn red" onclick="faultePrecision(0.3)">−0.3</button>
+    <div class="precision-row-cutoff">
+      <div class="precision-value-small red"><span class="num">${pass.precision.toFixed(1)}</span></div>
+      <div class="precision-btns-col">
+        <button class="precision-btn-big red minus" onclick="faultePrecision(0.1)">−0.1</button>
+        <button class="precision-btn-big red minus" onclick="faultePrecision(0.3)">−0.3</button>
+      </div>
+      <div class="precision-btns-col">
+        <button class="precision-btn-big red plus" onclick="corrigePrecision(0.1)">+0.1</button>
+        <button class="precision-btn-big red plus" onclick="corrigePrecision(0.3)">+0.3</button>
       </div>
     </div>
   `;
@@ -2291,7 +2350,7 @@ function renderScoreOptionsSingle(key,label){
   const options = [2.0,1.9,1.8,1.7,1.6,1.5,1.4,1.3,1.2,1.1,1.0,0.9,0.8,0.7,0.6,0.5];
   return `
     <div class="crit-label">${label}</div>
-    <div class="score-options">
+    <div class="score-options" data-scroll-key="single-${key}">
       ${options.map(opt => `<button class="score-opt red ${val === opt ? 'active' : ''}" onclick="setPresentationSingle('${key}',${opt})">${opt.toFixed(1)}</button>`).join('')}
     </div>
   `;
@@ -2391,6 +2450,16 @@ function faultePrecision(amount){
   writeJudgeScore();
   render();
 }
+// Corrige une faute saisie par erreur : rend les points (plafonné à 4.0) et retire la
+// dernière faute correspondante du journal si elle existe.
+function corrigePrecision(amount){
+  const pass = currentPass(judgeState);
+  pass.precision = clamp(round1(pass.precision + amount), 0, 4.0);
+  const idx = pass.faultsLog.lastIndexOf(amount);
+  if(idx !== -1) pass.faultsLog.splice(idx, 1);
+  writeJudgeScore();
+  render();
+}
 function resetPrecision(){
   const pass = currentPass(judgeState);
   pass.precision = 4.0;
@@ -2456,6 +2525,9 @@ let poomsaeR1Input = '';
 let poomsaeR2Input = '';
 let history = [];
 let historyUnsub = null;
+let rankingHistory = [];
+let rankingLoaded = false;
+let rankingLoading = false;
 
 function listenHistory(){
   if(historyUnsub) return;
@@ -2567,6 +2639,8 @@ function renderAdminTabHistory(){
       <button class="btn btn-faute3" onclick="resetHistory()">🗑️ Réinitialiser l'historique</button>
     </div>
     ${renderHistoryCard()}
+    <div class="section-title" style="color:#9098a3;">Classement par catégorie (meilleur troisième par points)</div>
+    ${renderCategoryRankings()}
   `;
 }
 
@@ -2843,6 +2917,106 @@ function printHistory(){
   w.document.close();
   w.focus();
   w.print();
+}
+
+// Charge (une fois) un plus grand échantillon de l'historique pour construire le
+// classement par catégorie — indépendant du tableau "derniers matchs" (limité à 20).
+function loadRankingHistory(){
+  if(!firebaseReady || rankingLoaded || rankingLoading) return;
+  rankingLoading = true;
+  historyRef().limit(500).get().then(snap => {
+    rankingHistory = snap.docs.map(d => d.data());
+    rankingLoaded = true;
+    rankingLoading = false;
+    render();
+  }).catch(err => {
+    rankingLoading = false;
+    reportWriteError('loadRankingHistory', err);
+  });
+}
+
+// Éclate chaque match en une ou deux "performances" individuelles (nom, catégorie, points),
+// pour permettre de comparer entre eux tous les athlètes d'une même catégorie — y compris
+// les perdants de brackets différents — et ainsi dégager le meilleur troisième par points.
+function buildCategoryRankings(){
+  const perfs = [];
+  rankingHistory.forEach(h => {
+    if(h.mode === 'sideBySide'){
+      const [catA, catB] = (h.category || '— / —').split(' / ');
+      if(typeof h.finalA === 'number') perfs.push({ name: h.athleteA || '—', category: (catA || '—').trim(), points: h.finalA, matchNumber: h.matchNumber, typePhase: h.typePhase });
+      if(typeof h.finalB === 'number') perfs.push({ name: h.athleteB || '—', category: (catB || '—').trim(), points: h.finalB, matchNumber: h.matchNumber, typePhase: h.typePhase });
+    } else if(typeof h.final === 'number'){
+      perfs.push({ name: h.name || '—', category: h.category || '—', points: h.final, matchNumber: h.matchNumber, typePhase: h.typePhase });
+    }
+  });
+
+  const byCategory = {};
+  perfs.forEach(p => {
+    const cat = p.category || '—';
+    if(!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(p);
+  });
+  Object.values(byCategory).forEach(list => list.sort((a,b) => b.points - a.points));
+  return byCategory;
+}
+
+function renderCategoryRankings(){
+  if(!rankingLoaded){
+    loadRankingHistory();
+    return `<div class="card"><p class="footer-note">Chargement du classement…</p></div>`;
+  }
+  const byCategory = buildCategoryRankings();
+  const categories = Object.keys(byCategory).filter(c => c && c !== '—' && c !== '— / —').sort();
+  if(categories.length === 0){
+    return `<div class="card"><p class="footer-note">Pas encore assez de résultats pour établir un classement.</p></div>`;
+  }
+  const medals = ['🥇','🥈','🥉'];
+
+  // Meilleurs troisièmes toutes catégories confondues : utile pour repêcher le meilleur
+  // troisième par points quand une seule place de repêchage est disponible.
+  const thirds = categories
+    .map(cat => ({ cat, perf: byCategory[cat][2] }))
+    .filter(x => x.perf)
+    .sort((a,b) => b.perf.points - a.perf.points);
+  const bestThirdsBlock = thirds.length ? `
+    <div class="card" style="border:1px solid var(--gold);">
+      <div class="section-title" style="margin-top:0;">🥉 Meilleurs troisièmes — toutes catégories confondues</div>
+      <table class="ranking-table">
+        <tr><th>Rang</th><th>Athlète</th><th>Catégorie</th><th>Points</th><th>Match</th></tr>
+        ${thirds.map((x,i) => `
+          <tr class="${i === 0 ? 'rank-third' : ''}">
+            <td>${i+1}</td>
+            <td>${escapeHtml(x.perf.name)}</td>
+            <td>${escapeHtml(x.cat)}</td>
+            <td>${x.perf.points.toFixed(1)}</td>
+            <td>${escapeHtml(x.perf.typePhase || '—')}</td>
+          </tr>
+        `).join('')}
+      </table>
+    </div>
+  ` : '';
+
+  const perCategoryBlocks = categories.map(cat => {
+    const rows = byCategory[cat].map((p, i) => `
+      <tr class="${i === 2 ? 'rank-third' : ''}">
+        <td>${medals[i] || (i+1)}</td>
+        <td>${escapeHtml(p.name)}</td>
+        <td>${p.points.toFixed(1)}</td>
+        <td>${escapeHtml(p.typePhase || '—')}</td>
+      </tr>
+    `).join('');
+    return `
+      <div class="card">
+        <div class="section-title" style="margin-top:0;">🏅 Classement — ${escapeHtml(cat)}</div>
+        <table class="ranking-table">
+          <tr><th>Rang</th><th>Athlète</th><th>Points</th><th>Match</th></tr>
+          ${rows}
+        </table>
+      </div>
+    `;
+  }).join('');
+
+  return bestThirdsBlock + perCategoryBlocks;
 }
 
 function renderHistoryCard(){
