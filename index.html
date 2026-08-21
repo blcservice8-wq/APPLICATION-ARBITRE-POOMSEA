@@ -7,6 +7,7 @@
 <script>window.__sdkLoadError = null;</script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" onerror="window.__sdkLoadError='Impossible de charger firebase-app (réseau bloqué ou hors-ligne)';"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js" onerror="window.__sdkLoadError='Impossible de charger firebase-firestore (réseau bloqué ou hors-ligne)';"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js" onerror="window.__sdkLoadError='Impossible de charger firebase-auth (réseau bloqué ou hors-ligne)';"></script>
 <style>
   :root{
     --navy:#0B1F3A;
@@ -613,7 +614,7 @@ const firebaseConfig = {
        .then(b => console.log(Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('')))
 ========================================================= */
 const AUTH_USERNAME = 'poomsae';
-const AUTH_PASSWORD_HASH = '95a030f7e3a6f290627638f1f9492329f55c965c62741346dc43a29e84811ea2'; // = "dakar2026"
+const AUTH_PASSWORD_HASH = 'a4b80cbba6f8e32b0470f9b57011be8300f09ad04e4787a98006b71cfba00c35'; // = "DkTkd-2026Secur"
 const AUTH_SESSION_KEY = 'poomsae_auth_ok';
 
 /* =========================================================
@@ -622,7 +623,7 @@ const AUTH_SESSION_KEY = 'poomsae_auth_ok';
    les notes/contrôles aux juges, qui ne connaissent que le login général).
    Même méthode que ci-dessus pour changer le mot de passe.
 ========================================================= */
-const ADMIN_PASSWORD_HASH = '6051fc84a7a0d74c225fb18a496b09952da5642e60723ecae543298edd7d82d6'; // = "admin2026"
+const ADMIN_PASSWORD_HASH = '09011e5799ad51da76c963778faa57dc7c32c1c6529855661b4d21128b4513c8'; // = "DkTkdAdmin-9421"
 const ADMIN_SESSION_KEY = 'poomsae_admin_ok';
 
 /* =========================================================
@@ -632,7 +633,7 @@ const ADMIN_SESSION_KEY = 'poomsae_admin_ok';
    détails internes sensibles (structure Firestore, identifiants d'appareils).
    Même méthode que ci-dessus pour changer le mot de passe.
 ========================================================= */
-const SETTINGS_PASSWORD_HASH = '290438f3725be3a463db03d8580001aa1eab073fb5982340e2a8b347b7234a68'; // = "parametres2026"
+const SETTINGS_PASSWORD_HASH = '49fd9f3e50f5ffcdaa8cc577f17cbfc58b85544e7e26fb5b63ee760ab0c1eddf'; // = "DkTkdSys-6307"
 const SETTINGS_SESSION_KEY = 'poomsae_settings_ok';
 let settingsPasswordInput = '';
 let settingsError = '';
@@ -647,6 +648,28 @@ async function sha256Hex(str){
   const enc = new TextEncoder().encode(str);
   const buf = await crypto.subtle.digest('SHA-256', enc);
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+// Connexion Firebase Auth anonyme : donne à cet appareil un identifiant stable
+// (UID) tant que le navigateur ne l'efface pas. Cet UID est joint à chaque
+// écriture (note, match, chrono...) pour savoir QUI a écrit quoi, et peut être
+// désactivé individuellement depuis la console Firebase si besoin (accès
+// révoqué pour cet appareil précis, sans toucher aux autres).
+function initAnonymousAuth(){
+  if(!firebase.auth) return; // SDK Auth non chargé (réseau bloqué) : on continue sans traçabilité.
+  firebase.auth().onAuthStateChanged(user => {
+    if(user){
+      currentUid = user.uid;
+      updateDiagnosticUid();
+    }
+  });
+  firebase.auth().signInAnonymously().catch(err => {
+    console.error('Erreur Firebase Auth (anonyme) :', err.code, err.message);
+  });
+}
+function updateDiagnosticUid(){
+  const el = document.getElementById('diagUidValue');
+  if(el) el.textContent = currentUid || '—';
 }
 
 async function attemptLogin(){
@@ -717,6 +740,10 @@ function renderLogin(){
 }
 
 let db = null;
+// UID Firebase Auth (anonyme) de cet appareil — permet de tracer QUI a écrit quoi,
+// et à l'admin de révoquer un appareil précis depuis la console Firebase
+// (Authentication > Users > menu ⋮ > Disable account), sans mot de passe partagé à changer.
+let currentUid = null;
 let firebaseReady = false;
 let lastFirestoreError = null; // message affiché en clair à l'écran (au lieu de dépendre d'une alerte)
 
@@ -753,6 +780,7 @@ function initFirebase(){
     listenPing();
     listenChrono();
     startPollingFallback();
+    initAnonymousAuth();
   }catch(e){
     console.error('Erreur d\'initialisation Firebase :', e);
     lastFirestoreError = (e && e.code ? e.code + ' — ' : '') + (e && e.message ? e.message : String(e));
@@ -1684,7 +1712,7 @@ function writeJudgeScore(){
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       };
   }
-  return notesRef().doc('j' + currentJudge).set(payload, {merge:false})
+  return notesRef().doc('j' + currentJudge).set({ ...payload, submittedByUid: currentUid || null }, {merge:false})
     .then(() => {
       lastNoteSentAt = new Date();
       isSendingNote = false;
@@ -1838,7 +1866,8 @@ function writeFinal(finalObj){
         finalA: finalObj.finalA,
         finalB: finalObj.finalB,
         final: null,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        submittedByUid: currentUid || null
       }
     : {
         mode: finalObj.mode,
@@ -1851,7 +1880,8 @@ function writeFinal(finalObj){
         winnerName: finalObj.name,
         loserName: '—',
         final: finalObj.final,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        submittedByUid: currentUid || null
       };
 
   nextMatchNumber().then(matchNumber => {
@@ -3269,6 +3299,7 @@ function renderDebugPanel(){
     'RAPPORT DE DIAGNOSTIC — Poomsae Dakar',
     'Heure : ' + new Date().toLocaleString('fr-FR'),
     'Firebase prêt : ' + firebaseReady,
+    'UID de cet appareil (Firebase Auth) : ' + (currentUid || '—'),
     'Dernière lecture session (athlète/reset) : ' + fmt(debugInfo.lastSessionReadAt),
     'Dernière lecture des notes : ' + fmt(debugInfo.lastNotesReadAt) + ' (source : ' + debugInfo.notesSource + ')',
     'Dernière erreur : ' + (debugInfo.lastError || 'aucune'),
@@ -3284,7 +3315,9 @@ function renderDebugPanel(){
         Firebase prêt : <b>${firebaseReady ? 'oui' : 'non'}</b> &nbsp;|&nbsp;
         Lecture session : <b>${fmt(debugInfo.lastSessionReadAt)}</b> &nbsp;|&nbsp;
         Lecture notes : <b>${fmt(debugInfo.lastNotesReadAt)}</b> (${debugInfo.notesSource})<br>
-        Dernière erreur : <b style="color:${debugInfo.lastError ? '#c0392b' : '#1a7a3c'}">${debugInfo.lastError ? escapeHtml(debugInfo.lastError) : 'aucune'}</b>
+        Dernière erreur : <b style="color:${debugInfo.lastError ? '#c0392b' : '#1a7a3c'}">${debugInfo.lastError ? escapeHtml(debugInfo.lastError) : 'aucune'}</b><br>
+        UID de cet appareil (Firebase Auth) : <b id="diagUidValue" style="font-family:monospace;">${escapeHtml(currentUid || '—')}</b>
+        — à communiquer pour désactiver précisément CET appareil depuis Firebase Console (Authentication → Users).
       </p>
       <button class="btn btn-plus" onclick="copyDebugReport()">📋 Copier le rapport de diagnostic</button>
       <pre style="background:#0f1622;color:#9fe6a0;font-size:11px;padding:10px;border-radius:8px;margin-top:10px;max-height:180px;overflow:auto;white-space:pre-wrap;">${escapeHtml(rawScores)}</pre>
