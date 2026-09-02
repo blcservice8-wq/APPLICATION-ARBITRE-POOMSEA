@@ -810,6 +810,7 @@ function updateDiagnosticUid(){
 }
 
 async function attemptLogin(){
+  if(loginChecking) return; // garde anti-double-clic : jamais 2 requêtes Firebase en parallèle
   loginError = '';
   loginChecking = true;
   render();
@@ -822,15 +823,33 @@ async function attemptLogin(){
     // routeAfterLogin() est déclenché par listenMyProfile() dès que le rôle
     // réel est confirmé côté serveur — on n'accorde jamais l'accès avant ça.
   } catch(err){
-    // Message volontairement générique (voir point 8) : ne jamais révéler si
-    // c'est l'identifiant ou le mot de passe qui est incorrect.
-    loginError = 'Identifiant ou mot de passe incorrect.';
-    // DEBUG TEMPORAIRE — à retirer une fois la connexion admin confirmée :
-    loginError += ' [code technique : ' + (err.code || 'inconnu') + ']';
-    console.warn('Échec de connexion :', err.code);
+    loginError = mapAuthErrorToMessage(err.code);
+    console.warn('Échec de connexion :', err.code, err.message);
   }
   loginChecking = false;
   render();
+}
+
+// Traduit chaque code d'erreur Firebase Auth en message utilisateur EXACT et
+// approprié — jamais de détail technique affiché ici (reste en console
+// uniquement), mais jamais non plus un message trompeur qui masquerait un
+// vrai blocage (ex. trop de tentatives) derrière "mot de passe incorrect".
+function mapAuthErrorToMessage(code){
+  switch(code){
+    case 'auth/too-many-requests':
+      return 'Trop de tentatives de connexion. L\'accès est temporairement limité par Firebase. Merci de patienter quelques minutes avant de réessayer.';
+    case 'auth/user-disabled':
+      return 'Ce compte a été désactivé par l\'administrateur.';
+    case 'auth/network-request-failed':
+      return 'Problème de connexion réseau. Vérifiez votre connexion internet.';
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+    case 'auth/invalid-email':
+      return 'Identifiant ou mot de passe incorrect.';
+    default:
+      return 'Connexion impossible pour le moment. Réessayez dans un instant.';
+  }
 }
 
 function logout(){
