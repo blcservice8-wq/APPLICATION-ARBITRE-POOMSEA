@@ -662,198 +662,113 @@ const firebaseConfig = {
 };
 
 /* =========================================================
-   AUTHENTIFICATION RÉELLE — Firebase Authentication (email/mot de passe)
-   ---------------------------------------------------------------------
-   Plus aucun mot de passe codé en dur ici. Chaque compte (ADMIN ou JUGE)
-   est un vrai compte Firebase Auth : Firebase stocke et vérifie le mot
-   de passe côté serveur (jamais en clair, jamais renvoyé au navigateur),
-   limite automatiquement les tentatives (protection brute-force), et
-   délivre un jeton de session sécurisé (ID token, renouvelé automatiquement,
-   invalidé pour de bon à la déconnexion).
-
-   Le rôle (admin / juge) et le statut (actif / désactivé) de chaque
-   compte sont stockés dans Firestore, collection "users", document = uid
-   Firebase Auth : { role:'admin'|'judge', active:true|false, username,
-   judgeSlot (1..5, juge seulement), createdAt }. C'est CE document, lu et
-   vérifié côté serveur par les règles de sécurité Firestore (voir le
-   fichier de règles fourni séparément), qui autorise ou refuse chaque
-   lecture/écriture — jamais le JavaScript du navigateur. Un juge qui
-   modifierait une variable locale n'obtient donc rien : Firestore refuse
-   toute requête qui ne correspond pas à son rôle réel côté serveur.
-
-   Firebase Auth n'utilise pas de nom d'utilisateur mais une adresse
-   e-mail : chaque identifiant "juge01" est mappé vers une adresse interne
-   stable (identifiantToEmail) qui n'a pas besoin d'exister réellement —
-   Firebase Auth ne l'utilise que comme identifiant unique de compte.
+   ACCES SECURISE — identifiant + mot de passe (hash SHA-256)
+   Pour changer les identifiants : remplace AUTH_USERNAME, et régénère
+   AUTH_PASSWORD_HASH avec, dans la console du navigateur :
+     crypto.subtle.digest('SHA-256', new TextEncoder().encode('TON_NOUVEAU_MDP'))
+       .then(b => console.log(Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('')))
 ========================================================= */
-function identifiantToEmail(identifiant){
-  return identifiant.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '') + '@dktkd-poomsae.local';
-}
+const AUTH_USERNAME = 'poomsae';
+const AUTH_PASSWORD_HASH = '85c236857ccb943c4ffbd9d3511d25014af83c2212475e546ac21f10c7381cca'; // = "DkTkd-2026"
+const AUTH_SESSION_KEY = 'poomsae_auth_ok';
 
-// App Firebase secondaire, isolée de la session principale, utilisée UNIQUEMENT
-// par l'ADMIN pour créer un compte juge sans se faire déconnecter lui-même.
-// (Le SDK client Firebase Auth connecte automatiquement l'appareil au compte
-// tout juste créé — sans cette 2e instance, créer un juge éjecterait l'admin.)
-let judgeCreatorApp = null;
-function getJudgeCreatorAuth(){
-  if(!judgeCreatorApp){
-    judgeCreatorApp = firebase.initializeApp(firebaseConfig, 'judgeCreator');
-  }
-  return judgeCreatorApp.auth();
-}
+/* =========================================================
+   ACCES ADMIN — second mot de passe indépendant, requis en plus du
+   login général pour ouvrir la fenêtre Espace Admin (masque vraiment
+   les notes/contrôles aux juges, qui ne connaissent que le login général).
+   Même méthode que ci-dessus pour changer le mot de passe.
+========================================================= */
+const ADMIN_PASSWORD_HASH = 'bd93276bcfd6ab40cbd2e28c5defbe51665bbe12fd91fbd6aa07a39f14f5df4c'; // = "DkTkdAdmin"
+const ADMIN_SESSION_KEY = 'poomsae_admin_ok';
+
+/* =========================================================
+   ACCES PARAMETRES — troisième mot de passe indépendant, requis en plus du
+   login général et du mot de passe Espace Admin pour ouvrir l'onglet
+   "Paramètres" (diagnostic technique + test de connexion), qui expose des
+   détails internes sensibles (structure Firestore, identifiants d'appareils).
+   Même méthode que ci-dessus pour changer le mot de passe.
+========================================================= */
+const SETTINGS_PASSWORD_HASH = '770ff68f310a3525ea24c9769b4f33640b9d7dd9473f49ef2382fef62a1aefcc'; // = "DkTkdSys"
+const SETTINGS_SESSION_KEY = 'poomsae_settings_ok';
+let settingsPasswordInput = '';
+let settingsError = '';
+let settingsChecking = false;
 
 let loginUsernameInput = '';
 let loginPasswordInput = '';
 let loginError = '';
 let loginChecking = false;
 
-// Profil du compte actuellement connecté, hydraté depuis Firestore users/{uid}
-// (jamais depuis une variable locale modifiable) — voir listenMyProfile().
-let myUid = null;
-let myRole = null;      // 'admin' | 'judge' | null
-let myActive = null;    // true | false | null (null = pas encore chargé)
-let myUsername = null;
-let myJudgeSlot = null; // 1..5, uniquement pour un compte juge
-let myProfileLoaded = false;
-let authRestoring = true; // true tant qu'on n'a pas su si un utilisateur était déjà connecté
+async function sha256Hex(str){
+  const enc = new TextEncoder().encode(str);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
 
-function initAuth(){
-  if(!firebase.auth) return;
+// Connexion Firebase Auth anonyme : donne à cet appareil un identifiant stable
+// (UID) tant que le navigateur ne l'efface pas. Cet UID est joint à chaque
+// écriture (note, match, chrono...) pour savoir QUI a écrit quoi, et peut être
+// désactivé individuellement depuis la console Firebase si besoin (accès
+// révoqué pour cet appareil précis, sans toucher aux autres).
+function initAnonymousAuth(){
+  if(!firebase.auth) return; // SDK Auth non chargé (réseau bloqué) : on continue sans traçabilité.
   firebase.auth().onAuthStateChanged(user => {
-    authRestoring = false;
     if(user){
       currentUid = user.uid;
-      myUid = user.uid;
       updateDiagnosticUid();
-      listenMyProfile(user.uid);
-    } else {
-      myUid = null; myRole = null; myActive = null; myUsername = null; myJudgeSlot = null;
-      myProfileLoaded = false;
-      if(unsubMyProfile){ unsubMyProfile(); unsubMyProfile = null; }
-      if(view !== 'login') view = 'login';
-      render();
     }
   });
-}
-
-let dataListenersStarted = false;
-function startDataListenersOnce(){
-  if(dataListenersStarted) return;
-  dataListenersStarted = true;
-  listenSession();
-  listenNotes();
-  listenJudges();
-  listenPing();
-  listenChrono();
-  startPollingFallback();
-}
-
-let unsubMyProfile = null;
-function listenMyProfile(uid){
-  if(unsubMyProfile) unsubMyProfile();
-  unsubMyProfile = db.collection('users').doc(uid).onSnapshot(doc => {
-    myProfileLoaded = true;
-    if(!doc.exists){
-      // Compte Firebase Auth valide mais sans profil de rôle : accès refusé.
-      forceSignOutUnauthorized('Ce compte n\'a pas (ou plus) de rôle attribué.');
-      return;
-    }
-    const d = doc.data();
-    myRole = d.role || null;
-    myActive = d.active !== false;
-    myUsername = d.username || null;
-    myJudgeSlot = d.judgeSlot || null;
-    if(!myActive){
-      forceSignOutUnauthorized('Ce compte a été désactivé par l\'administrateur.');
-      return;
-    }
-    startDataListenersOnce();
-    if(view === 'login' && !loginChecking){
-      routeAfterLogin();
-    }
-    render();
-  }, err => {
-    console.error('Erreur lecture profil utilisateur :', err);
+  firebase.auth().signInAnonymously().catch(err => {
+    console.error('Erreur Firebase Auth (anonyme) :', err.code, err.message);
   });
 }
-
-function forceSignOutUnauthorized(msg){
-  loginError = 'Identifiant ou mot de passe incorrect.';
-  console.warn('Accès refusé :', msg);
-  firebase.auth().signOut().finally(() => { location.reload(); });
-}
-
-// Aiguille chaque rôle vers son espace : un compte JUGE est lié à un seul
-// numéro de juge (attribué par l'admin à la création) et n'a plus le choix
-// de "se déclarer" juge 1 à 5 depuis l'écran — il arrive directement sur
-// SA case, ce qui empêche un juge d'usurper l'identité d'un autre juge.
-function routeAfterLogin(){
-  const isStageWindow = typeof location !== 'undefined' && new URLSearchParams(location.search).get('stage') === '1';
-  if(isStageWindow){
-    // Fenêtre dédiée 2e écran : va directement sur l'Écran Central, quel que
-    // soit le rôle (admin ou juge), une fois le compte confirmé actif.
-    view = 'stage';
-  } else if(myRole === 'admin'){
-    view = 'home';
-  } else if(myRole === 'judge' && myJudgeSlot){
-    goJudge(myJudgeSlot);
-    return;
-  } else {
-    view = 'home';
-  }
-  render();
-}
-
 function updateDiagnosticUid(){
   const el = document.getElementById('diagUidValue');
   if(el) el.textContent = currentUid || '—';
 }
 
 async function attemptLogin(){
-  if(loginChecking) return; // garde anti-double-clic : jamais 2 requêtes Firebase en parallèle
   loginError = '';
   loginChecking = true;
   render();
-  try{
-    await firebase.auth().signInWithEmailAndPassword(
-      identifiantToEmail(loginUsernameInput),
-      loginPasswordInput
-    );
-    loginPasswordInput = '';
-    // routeAfterLogin() est déclenché par listenMyProfile() dès que le rôle
-    // réel est confirmé côté serveur — on n'accorde jamais l'accès avant ça.
-  } catch(err){
-    loginError = mapAuthErrorToMessage(err.code);
-    console.warn('Échec de connexion :', err.code, err.message);
-  }
+  const userOk = loginUsernameInput.trim().toLowerCase() === AUTH_USERNAME.toLowerCase();
+  const passHash = await sha256Hex(loginPasswordInput);
   loginChecking = false;
+  if(userOk && passHash === AUTH_PASSWORD_HASH){
+    sessionStorage.setItem(AUTH_SESSION_KEY, '1');
+    loginPasswordInput = '';
+    view = 'home';
+  } else {
+    loginError = 'Identifiant ou mot de passe incorrect.';
+  }
   render();
 }
 
-// Traduit chaque code d'erreur Firebase Auth en message utilisateur EXACT et
-// approprié — jamais de détail technique affiché ici (reste en console
-// uniquement), mais jamais non plus un message trompeur qui masquerait un
-// vrai blocage (ex. trop de tentatives) derrière "mot de passe incorrect".
-function mapAuthErrorToMessage(code){
-  switch(code){
-    case 'auth/too-many-requests':
-      return 'Trop de tentatives de connexion. L\'accès est temporairement limité par Firebase. Merci de patienter quelques minutes avant de réessayer.';
-    case 'auth/user-disabled':
-      return 'Ce compte a été désactivé par l\'administrateur.';
-    case 'auth/network-request-failed':
-      return 'Problème de connexion réseau. Vérifiez votre connexion internet.';
-    case 'auth/invalid-credential':
-    case 'auth/wrong-password':
-    case 'auth/user-not-found':
-    case 'auth/invalid-email':
-      return 'Identifiant ou mot de passe incorrect.';
-    default:
-      return 'Connexion impossible pour le moment. Réessayez dans un instant.';
-  }
+function logout(){
+  sessionStorage.removeItem(AUTH_SESSION_KEY);
+  sessionStorage.removeItem(ADMIN_SESSION_KEY);
+  sessionStorage.removeItem(SETTINGS_SESSION_KEY);
+  adminUnlocked = false;
+  settingsUnlocked = false;
+  adminModalOpen = false;
+  view = 'login';
+  render();
 }
 
-function logout(){
-  firebase.auth().signOut().finally(() => { location.reload(); });
+async function attemptSettingsUnlock(){
+  settingsError = '';
+  settingsChecking = true;
+  render();
+  const passHash = await sha256Hex(settingsPasswordInput);
+  settingsChecking = false;
+  if(passHash === SETTINGS_PASSWORD_HASH){
+    sessionStorage.setItem(SETTINGS_SESSION_KEY, '1');
+    settingsUnlocked = true;
+    settingsPasswordInput = '';
+  } else {
+    settingsError = 'Mot de passe incorrect.';
+  }
+  render();
 }
 
 function renderLogin(){
@@ -868,14 +783,10 @@ function renderLogin(){
         onkeydown="if(event.key==='Enter')attemptLogin()"
         style="margin-bottom:12px;">
       <label class="field-label">Mot de passe</label>
-      <div style="position:relative;margin-bottom:16px;">
-        <input type="password" id="loginPasswordField" value="${escapeHtml(loginPasswordInput)}"
-          oninput="loginPasswordInput=this.value"
-          onkeydown="if(event.key==='Enter')attemptLogin()"
-          style="width:100%;box-sizing:border-box;padding-right:70px;">
-        <button type="button" onclick="const f=document.getElementById('loginPasswordField'); f.type = f.type==='password' ? 'text' : 'password';"
-          style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:#2563eb;font-size:12px;cursor:pointer;">Afficher</button>
-      </div>
+      <input type="password" id="loginPasswordField" value="${escapeHtml(loginPasswordInput)}"
+        oninput="loginPasswordInput=this.value"
+        onkeydown="if(event.key==='Enter')attemptLogin()"
+        style="margin-bottom:16px;">
       <button class="btn-new" style="width:100%;" onclick="attemptLogin()" ${loginChecking ? 'disabled' : ''}>
         ${loginChecking ? 'Vérification…' : 'Se connecter'}
       </button>
@@ -918,7 +829,13 @@ function initFirebase(){
     });
     firebaseReady = true;
     document.getElementById('topPillText').textContent = 'Connexion en cours…';
-    initAuth();
+    listenSession();
+    listenNotes();
+    listenJudges();
+    listenPing();
+    listenChrono();
+    startPollingFallback();
+    initAnonymousAuth();
   }catch(e){
     console.error('Erreur d\'initialisation Firebase :', e);
     lastFirestoreError = (e && e.code ? e.code + ' — ' : '') + (e && e.message ? e.message : String(e));
@@ -935,15 +852,12 @@ let judgeHydrated = false; // true seulement une fois les données réelles du s
 /* =========================================================
    ETAT GLOBAL
 ========================================================= */
-// L'écran de départ est TOUJOURS 'login' : l'accès n'est jamais accordé sur la
-// seule foi d'un flag stocké dans le navigateur. onAuthStateChanged (initAuth)
-// et listenMyProfile() sont les SEULS chemins qui peuvent faire passer 'view'
-// à autre chose que 'login', et uniquement après confirmation serveur du rôle
-// et du statut actif du compte (voir plus haut).
-let view = 'login'; // login | home | judge | admin
-// Fenêtre dédiée ouverte sur un 2e écran (voir openStageOnSecondScreen) : une fois
-// le compte confirmé actif, routeAfterLogin() l'envoie directement sur l'Écran
-// Central sans repasser par le choix d'espace (voir ?stage=1 plus haut).
+let view = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(AUTH_SESSION_KEY) === '1') ? 'home': 'login'; // login | home | judge | admin
+// Fenêtre dédiée ouverte sur un 2e écran (voir openStageOnSecondScreen) : va directement
+// sur l'Écran Central sans repasser par le choix d'espace.
+if(typeof location !== 'undefined' && new URLSearchParams(location.search).get('stage') === '1' && view !== 'login'){
+  view = 'stage';
+}
 let currentJudge = null; // 1..5
 
 // Etat de session partagé, reflet de Firestore session/current
@@ -2306,19 +2220,17 @@ function renderRefereeAnnouncements(){
 }
 
 let adminModalOpen = false;
-// adminUnlocked reflète désormais simplement "le rôle admin a été confirmé par
-// Firestore" (voir listenMyProfile) — il n'y a plus de second mot de passe local
-// à saisir : c'est le serveur, pas le navigateur, qui a déjà tranché.
-let adminUnlocked = false;
-let settingsUnlocked = false;
+let adminUnlocked = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(ADMIN_SESSION_KEY) === '1');
+let settingsUnlocked = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SETTINGS_SESSION_KEY) === '1');
+let adminPasswordInput = '';
+let adminLoginError = '';
+let adminChecking = false;
 
-// Ouvre la fenêtre Espace Admin (uniquement si le rôle admin est confirmé, voir
-// le garde-fou dans openAdminPanel ci-dessous).
+// Ouvre la fenêtre Espace Admin. Si le second mot de passe n'a pas encore été saisi
+// pendant cette session, affiche d'abord l'écran de verrouillage (voir renderAdminModal).
 function openAdminPanel(){
-  if(myRole !== 'admin'){ view = 'home'; render(); return; }
   adminModalOpen = true;
-  adminUnlocked = true;
-  hydrateAdminPanelFields();
+  if(adminUnlocked) hydrateAdminPanelFields();
   render();
 }
 
@@ -2338,15 +2250,29 @@ function hydrateAdminPanelFields(){
   listenHistory();
 }
 
+async function attemptAdminLogin(){
+  adminLoginError = '';
+  adminChecking = true;
+  render();
+  const passHash = await sha256Hex(adminPasswordInput);
+  adminChecking = false;
+  if(passHash === ADMIN_PASSWORD_HASH){
+    sessionStorage.setItem(ADMIN_SESSION_KEY, '1');
+    adminUnlocked = true;
+    adminPasswordInput = '';
+    hydrateAdminPanelFields();
+  } else {
+    adminLoginError = 'Mot de passe Espace Admin incorrect.';
+  }
+  render();
+}
+
 function closeAdminPanel(){
   adminModalOpen = false;
   render();
 }
 
 function goJudge(n){
-  if(myRole === 'judge' && myJudgeSlot && n !== myJudgeSlot){
-    n = myJudgeSlot; // un compte juge ne peut jamais ouvrir la case d'un autre juge
-  }
   currentJudge = n;
   resetJudgeState();
   resetSideStates();
@@ -2887,7 +2813,6 @@ function renderAdminTabBar(){
   const tabs = [
     {id:'athlete', icon:'🥋', label:'Éditer Athlète'},
     {id:'judges', icon:'⚖️', label:'Espace Juges'},
-    {id:'accounts', icon:'🔐', label:'Comptes Juges'},
     {id:'screen', icon:'🖥️', label:'Écran & Chrono'},
     {id:'history', icon:'🕘', label:'Historiques'},
     {id:'settings', icon:'🔧', label:'Paramètres'},
@@ -2907,164 +2832,6 @@ function renderAdminTabAthlete(){
 // Fenêtre "Espace Juges": édition des noms de juges + notes des 5 juges reçues en direct.
 function renderAdminTabJudges(){
   return `${renderJudgesEditCard()}${session.mode === 'sideBySide' ? renderJudgesScoreGridSideBySide() : renderJudgesScoreGridSingle()}`;
-}
-
-/* =========================================================
-   ONGLET "COMPTES JUGES" — création/désactivation de vrais comptes
-   Firebase Auth par l'admin (point 3 / 11 de la demande).
-========================================================= */
-let judgeAccounts = [];         // liste en direct des comptes {uid, username, judgeSlot, active, createdAt}
-let unsubJudgeAccounts = null;
-
-let newJudgeUsername = '';
-let newJudgePassword = '';
-let newJudgeSlot = '1';
-let judgeAccountFormError = '';
-let judgeAccountFormBusy = false;
-
-function listenJudgeAccounts(){
-  if(!firebaseReady || unsubJudgeAccounts) return;
-  unsubJudgeAccounts = db.collection('users').where('role', '==', 'judge')
-    .onSnapshot(qs => {
-      const list = [];
-      qs.forEach(doc => list.push({ uid: doc.id, ...doc.data() }));
-      list.sort((a, b) => (a.judgeSlot || 0) - (b.judgeSlot || 0) || (a.username || '').localeCompare(b.username || ''));
-      judgeAccounts = list;
-      render();
-    }, err => {
-      console.error('Erreur lecture comptes juges :', err);
-    });
-}
-
-async function submitCreateJudgeAccount(){
-  judgeAccountFormError = '';
-  const username = newJudgeUsername.trim().toLowerCase();
-  const slot = parseInt(newJudgeSlot, 10);
-  if(!username || !/^[a-z0-9._-]{3,30}$/.test(username)){
-    judgeAccountFormError = 'Identifiant invalide (3 à 30 caractères : lettres, chiffres, . _ -).';
-    render(); return;
-  }
-  if(newJudgePassword.length < 6){
-    judgeAccountFormError = 'Le mot de passe doit contenir au moins 6 caractères.';
-    render(); return;
-  }
-  if(!(slot >= 1 && slot <= 5)){
-    judgeAccountFormError = 'Numéro de juge invalide (1 à 5).';
-    render(); return;
-  }
-  const conflict = judgeAccounts.find(j => j.active && j.judgeSlot === slot);
-  if(conflict){
-    judgeAccountFormError = `Le juge ${slot} a déjà un compte actif (${conflict.username}). Désactive-le d'abord si tu veux le remplacer.`;
-    render(); return;
-  }
-  judgeAccountFormBusy = true;
-  render();
-  const secondaryAuth = getJudgeCreatorAuth();
-  try{
-    const cred = await secondaryAuth.createUserWithEmailAndPassword(identifiantToEmail(username), newJudgePassword);
-    const uid = cred.user.uid;
-    await secondaryAuth.signOut(); // libère l'instance secondaire, n'affecte pas la session admin
-    await db.collection('users').doc(uid).set({
-      role: 'judge',
-      username,
-      judgeSlot: slot,
-      active: true,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      createdByUid: currentUid || null
-    });
-    newJudgeUsername = '';
-    newJudgePassword = '';
-    newJudgeSlot = '1';
-  } catch(err){
-    if(err.code === 'auth/email-already-in-use'){
-      judgeAccountFormError = `L'identifiant "${username}" est déjà utilisé par un autre compte.`;
-    } else if(err.code === 'auth/weak-password'){
-      judgeAccountFormError = 'Mot de passe trop faible (minimum 6 caractères).';
-    } else {
-      judgeAccountFormError = 'Erreur lors de la création du compte : ' + (err.message || err.code || err);
-    }
-    console.error('Erreur création compte juge :', err);
-  }
-  judgeAccountFormBusy = false;
-  render();
-}
-
-// Désactive/réactive un compte juge : ne supprime pas le compte Firebase Auth
-// (ceci nécessiterait le SDK Admin, indisponible côté navigateur) mais coupe
-// immédiatement tout accès réel via le flag "active", vérifié par les règles
-// de sécurité Firestore ET par listenMyProfile() qui déconnecte le juge dès
-// que ce flag passe à false — y compris s'il était déjà connecté ailleurs.
-async function toggleJudgeAccountActive(uid, makeActive){
-  try{
-    await db.collection('users').doc(uid).update({ active: makeActive });
-  } catch(err){
-    alert('Erreur de mise à jour du compte : ' + (err.message || err.code || err));
-  }
-}
-
-// Le SDK client ne peut pas changer le mot de passe d'un AUTRE compte que celui
-// actuellement connecté (limite normale de sécurité Firebase, pas un bug).
-// "Réinitialiser" désactive donc l'ancien compte et pré-remplit le formulaire
-// de création pour le même numéro de juge, avec un nouvel identifiant.
-function prepareJudgeAccountReset(account){
-  toggleJudgeAccountActive(account.uid, false);
-  newJudgeSlot = String(account.judgeSlot || 1);
-  newJudgeUsername = '';
-  newJudgePassword = '';
-  judgeAccountFormError = `Ancien compte "${account.username}" désactivé. Crée un nouvel identifiant pour le Juge ${account.judgeSlot} ci-dessous.`;
-  render();
-}
-
-function renderAdminTabAccounts(){
-  listenJudgeAccounts();
-  const rows = judgeAccounts.length ? judgeAccounts.map(a => `
-    <tr>
-      <td>${escapeHtml(a.username || '—')}</td>
-      <td>Juge ${a.judgeSlot || '?'}</td>
-      <td>${a.active ? '<span class="stat ok">ACTIF</span>' : '<span class="stat wait">DÉSACTIVÉ</span>'}</td>
-      <td style="white-space:nowrap;">
-        ${a.active
-          ? `<button class="btn btn-faute3" style="padding:6px 10px;font-size:12px;" onclick="toggleJudgeAccountActive('${a.uid}', false)">Désactiver</button>`
-          : `<button class="btn btn-plus" style="padding:6px 10px;font-size:12px;" onclick="toggleJudgeAccountActive('${a.uid}', true)">Réactiver</button>`
-        }
-        <button class="btn" style="padding:6px 10px;font-size:12px;" onclick='prepareJudgeAccountReset(${JSON.stringify(a).replace(/'/g, "&apos;")})'>Réinitialiser</button>
-      </td>
-    </tr>
-  `).join('') : `<tr><td colspan="4" style="text-align:center;color:#9098a3;">Aucun compte juge pour le moment.</td></tr>`;
-
-  return `
-    <div class="card">
-      <div class="section-title" style="margin-top:0;">🔐 Comptes juges existants</div>
-      <table style="width:100%;border-collapse:collapse;font-size:14px;">
-        <thead><tr style="text-align:left;color:#6b7280;">
-          <th style="padding:6px;">Identifiant</th><th style="padding:6px;">Poste</th><th style="padding:6px;">Statut</th><th style="padding:6px;">Actions</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-    <div class="card">
-      <div class="section-title" style="margin-top:0;">➕ Créer un compte juge</div>
-      ${judgeAccountFormError ? `<div class="config-warning" style="background:#fdeaea;color:#a12626;border-color:#f3b7bd;">${escapeHtml(judgeAccountFormError)}</div>` : ''}
-      <label class="field-label">Identifiant (ex. juge01)</label>
-      <input type="text" value="${escapeHtml(newJudgeUsername)}" autocapitalize="off"
-        oninput="newJudgeUsername=this.value" style="margin-bottom:10px;">
-      <label class="field-label">Mot de passe initial (6 caractères min.)</label>
-      <input type="text" value="${escapeHtml(newJudgePassword)}"
-        oninput="newJudgePassword=this.value" style="margin-bottom:10px;">
-      <label class="field-label">Attribué au poste</label>
-      <select onchange="newJudgeSlot=this.value" style="margin-bottom:14px;">
-        ${[1,2,3,4,5].map(n => `<option value="${n}" ${String(n)===newJudgeSlot?'selected':''}>Juge ${n}</option>`).join('')}
-      </select>
-      <button class="btn-new" style="width:100%;" onclick="submitCreateJudgeAccount()" ${judgeAccountFormBusy ? 'disabled' : ''}>
-        ${judgeAccountFormBusy ? 'Création…' : '✅ Créer le compte'}
-      </button>
-      <p class="footer-note" style="text-align:left;margin-top:10px;">
-        Le nouveau juge se connecte ensuite depuis l'écran de connexion générale avec cet
-        identifiant et ce mot de passe, et arrive automatiquement sur SA case (Juge ${escapeHtml(newJudgeSlot)}) —
-        il n'a jamais accès à l'Espace Admin.
-      </p>
-    </div>
-  `;
 }
 
 // Fenêtre "Écran & Chrono": écran public, raccourci écran central, chrono de passage.
@@ -3145,6 +2912,25 @@ function renderAdminTabHistory(){
 
 // Fenêtre "Paramètres": diagnostic technique + test de connexion PC ↔ téléphone.
 function renderAdminTabSettings(){
+  if(!settingsUnlocked){
+    return `
+      <div class="card" style="max-width:420px;margin:0 auto;text-align:center;">
+        <div class="section-title" style="margin-top:0;">🔒 Onglet protégé</div>
+        <p class="footer-note" style="margin-bottom:16px;">
+          Le diagnostic technique et le test de connexion contiennent des détails internes
+          sensibles. Saisis le mot de passe Paramètres pour y accéder.
+        </p>
+        <input type="password" id="settingsPasswordField" placeholder="Mot de passe Paramètres" value="${escapeHtml(settingsPasswordInput)}"
+          onfocus="formEditingActive=true" onblur="formEditingActive=false"
+          oninput="settingsPasswordInput=this.value" onkeydown="if(event.key==='Enter') attemptSettingsUnlock();"
+          style="width:100%;box-sizing:border-box;margin-bottom:12px;">
+        ${settingsError ? `<p style="color:#c8102e;font-size:13px;margin-bottom:12px;">${escapeHtml(settingsError)}</p>` : ''}
+        <button class="btn-new" style="width:100%;" onclick="attemptSettingsUnlock()" ${settingsChecking ? 'disabled' : ''}>
+          ${settingsChecking ? 'Vérification…' : '🔓 Déverrouiller'}
+        </button>
+      </div>
+    `;
+  }
   return `${renderDebugPanel()}<div class="ping-panel-wrap">${renderPingPanel()}</div>`;
 }
 
@@ -3154,7 +2940,6 @@ function renderAdmin(){
     ${renderAdminTabBar()}
     ${adminTab === 'athlete' ? renderAdminTabAthlete() : ''}
     ${adminTab === 'judges' ? renderAdminTabJudges() : ''}
-    ${adminTab === 'accounts' ? renderAdminTabAccounts() : ''}
     ${adminTab === 'screen' ? renderAdminTabScreen() : ''}
     ${adminTab === 'history' ? renderAdminTabHistory() : ''}
     ${adminTab === 'settings' ? renderAdminTabSettings() : ''}
@@ -3170,8 +2955,28 @@ function renderAdminModal(){
         <button class="admin-modal-close" onclick="closeAdminPanel()">✕ Fermer</button>
       </div>
       <div class="admin-modal-body">
-        ${renderAdmin()}
+        ${adminUnlocked ? renderAdmin() : renderAdminGate()}
       </div>
+    </div>
+  `;
+}
+
+// Écran de verrouillage affiché avant tout accès à l'Espace Admin, distinct du login
+// général: un juge qui connaît le mot de passe partagé n'a pas accès à cet écran.
+function renderAdminGate(){
+  return `
+    <div style="max-width:320px;margin:10px auto 6px;">
+      <div class="section-title" style="margin-top:0;text-align:center;">🔒 Accès organisateur</div>
+      <p style="font-size:13px;color:#6b7280;text-align:center;margin:0 0 16px;">Mot de passe spécifique à l'Espace Admin.</p>
+      ${adminLoginError ? `<div class="config-warning" style="background:#fdeaea;color:#a12626;border-color:#f3b7bd;">${escapeHtml(adminLoginError)}</div>` : ''}
+      <label class="field-label">Mot de passe Espace Admin</label>
+      <input type="password" id="adminPasswordField" value="${escapeHtml(adminPasswordInput)}"
+        oninput="adminPasswordInput=this.value"
+        onkeydown="if(event.key==='Enter')attemptAdminLogin()"
+        style="margin-bottom:16px;">
+      <button class="btn-new" style="width:100%;" onclick="attemptAdminLogin()" ${adminChecking ? 'disabled' : ''}>
+        ${adminChecking ? 'Vérification…' : 'Déverrouiller'}
+      </button>
     </div>
   `;
 }
