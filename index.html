@@ -869,6 +869,7 @@ let session = {
  athleteA: '', athleteB: '', // utilisés en mode 'sideBySide'
   athleteACategory: '', athleteAWeight: '',
   athleteBCategory: '', athleteBWeight: '',
+  division: '', freestyleClass: '', freestyleGender: '', freestyleComposition: '', // utilisés en mode 'freestyle'
   resetToken: 0,
  scores: {}, // mode single: { j1:{precision,puissance,rythme,expression,total,validated},... }
  // mode sideBySide: { j1:{winner:'A'|'B',validated},... }
@@ -934,6 +935,50 @@ function categoryOptionsHtml(selected){
   return '<option value="">— Catégorie —</option>' +
     CATEGORIES.map(c => `<option value="${c}" ${selected === c ? 'selected' : ''}>${c}</option>`).join('');
 }
+
+// ---------- Configuration spécifique au mode 'freestyle' : Division / Class / Gender ----------
+// Remplace "Catégorie" par "Division" et ajoute "Class" (Individual / Pair / Team) avec un
+// comportement hiérarchique : Individual -> Gender, Pair -> rien, Team -> "Team (Mixed)".
+const DIVISIONS = [
+  { value: 'under17', label: 'Under 17' },
+  { value: 'over17', label: 'Over 17' },
+];
+const FREESTYLE_CLASSES = [
+  { value: 'individual', label: 'Individual' },
+  { value: 'pair', label: 'Pair' },
+  { value: 'team', label: 'Team (Mixed)' },
+];
+const GENDERS = [
+  { value: 'male', label: 'Male' },
+  { value: 'female', label: 'Female' },
+];
+function divisionOptionsHtml(selected){
+  return '<option value="">— Choisir une division —</option>' +
+    DIVISIONS.map(d => `<option value="${d.value}" ${selected === d.value ? 'selected' : ''}>${d.label}</option>`).join('');
+}
+function freestyleClassOptionsHtml(selected){
+  return '<option value="">— Choisir une classe —</option>' +
+    FREESTYLE_CLASSES.map(c => `<option value="${c.value}" ${selected === c.value ? 'selected' : ''}>${c.label}</option>`).join('');
+}
+function genderOptionsHtml(selected){
+  return '<option value="">— Genre —</option>' +
+    GENDERS.map(g => `<option value="${g.value}" ${selected === g.value ? 'selected' : ''}>${g.label}</option>`).join('');
+}
+// Compose le libellé affiché/enregistré dans athleteCategory pour le mode freestyle,
+// pour rester compatible avec tous les écrans qui lisent déjà ce champ existant
+// (bannière athlète, historique, classement par catégorie).
+function freestyleCategoryLabel(division, cls, gender){
+  const divLabel = (DIVISIONS.find(d => d.value === division) || {}).label || '';
+  if(!divLabel) return '';
+  if(cls === 'individual'){
+    const genderLabel = (GENDERS.find(g => g.value === gender) || {}).label || '';
+    return [divLabel, 'Individual', genderLabel].filter(Boolean).join(' · ');
+  }
+  if(cls === 'pair') return [divLabel, 'Pair'].filter(Boolean).join(' · ');
+  if(cls === 'team') return [divLabel, 'Team (Mixed)'].filter(Boolean).join(' · ');
+  return divLabel;
+}
+
 function phaseOptionsHtml(selected){
   return '<option value="">— Phase —</option>' +
     PHASES.map(p => `<option value="${p}" ${selected === p ? 'selected' : ''}>${p}</option>`).join('');
@@ -1667,6 +1712,10 @@ function applySessionData(data){
   session.athleteBWeight = data.athleteBWeight || '';
   session.poomsaeR1 = data.poomsaeR1 || '';
   session.poomsaeR2 = data.poomsaeR2 || '';
+  session.division = data.division || '';
+  session.freestyleClass = data.freestyleClass || '';
+  session.freestyleGender = data.freestyleGender || '';
+  session.freestyleComposition = data.freestyleComposition || '';
   session.resetToken = data.resetToken || 0;
   session.final = data.final || null;
   if(view === 'judge' && session.resetToken !== lastSeenResetToken){
@@ -1928,6 +1977,10 @@ function setCompetitionMode(mode){
       athleteAWeight: '',
       athleteBCategory: '',
       athleteBWeight: '',
+      division: '',
+      freestyleClass: '',
+      freestyleGender: '',
+      freestyleComposition: '',
       resetToken: newResetToken,
       final: null
     }, {merge:false}).catch(err => reportWriteError('setCompetitionMode', err));
@@ -1941,6 +1994,9 @@ function setCompetitionMode(mode){
   athleteAWeightInput = '';
   athleteBCategoryInput = '';
   athleteBWeightInput = '';
+  freestyleDivisionInput = '';
+  freestyleClassInput = '';
+  freestyleGenderInput = '';
 }
 
 const COMPETITION_TYPE_LABEL = { single: 'Notation Cut-Off', sideBySide: 'Élimination directe', freestyle: 'Notation Freestyle' };
@@ -2246,6 +2302,9 @@ function hydrateAdminPanelFields(){
   athleteBWeightInput = session.athleteBWeight || '';
   poomsaeR1Input = session.poomsaeR1 || '';
   poomsaeR2Input = session.poomsaeR2 || '';
+  freestyleDivisionInput = session.division || '';
+  freestyleClassInput = session.freestyleClass || '';
+  freestyleGenderInput = session.freestyleGender || '';
   for(let i=1;i<=5;i++){ judgeNameInputs[i] = judgeNames[i] || ''; }
   listenHistory();
 }
@@ -2768,6 +2827,9 @@ let athleteBCategoryInput = '';
 let athleteBWeightInput = '';
 let poomsaeR1Input = '';
 let poomsaeR2Input = '';
+let freestyleDivisionInput = '';
+let freestyleClassInput = '';
+let freestyleGenderInput = '';
 let history = [];
 let historyUnsub = null;
 let rankingHistory = [];
@@ -2826,7 +2888,11 @@ function renderAdminTabBar(){
 
 // Fenêtre "Éditer Athlète": type de compétition + nom/catégorie (mono-athlète ou A/B selon le mode).
 function renderAdminTabAthlete(){
-  return `${renderModeToggle()}${session.mode === 'sideBySide' ? renderAthleteFormSideBySide() : renderAthleteFormSingle()}`;
+  let form;
+  if(session.mode === 'sideBySide') form = renderAthleteFormSideBySide();
+  else if(session.mode === 'freestyle') form = renderAthleteFormFreestyle();
+  else form = renderAthleteFormSingle();
+  return `${renderModeToggle()}${form}`;
 }
 
 // Fenêtre "Espace Juges": édition des noms de juges + notes des 5 juges reçues en direct.
@@ -3059,6 +3125,111 @@ function renderJudgesScoreGridSingle(){
 
 function renderAdminSingle(){
   return `${renderAthleteFormSingle()}${renderJudgesScoreGridSingle()}`;
+}
+
+/* =========================================================
+   VUE ADMIN — MODE NOTATION FREESTYLE (Division / Class / Gender,
+   pas de rounds ni de tirage au sort — ces éléments sont propres
+   au fonctionnement classique Cut-Off / Élimination directe).
+========================================================= */
+function renderAthleteFormFreestyle(){
+  const division = freestyleDivisionInput;
+  const cls = freestyleClassInput;
+  let extraField = '';
+  if(cls === 'individual'){
+    extraField = `
+      <div style="margin-top:12px;">
+        <label class="field-label">Gender</label>
+        <select class="field-select" onfocus="formEditingActive=true" onblur="formEditingActive=false" onchange="freestyleGenderInput=this.value; render();">${genderOptionsHtml(freestyleGenderInput)}</select>
+      </div>`;
+  } else if(cls === 'team'){
+    extraField = `
+      <div style="margin-top:12px;padding:10px 14px;border-radius:10px;background:rgba(0,80,160,0.08);border:1px solid rgba(0,80,160,0.25);color:var(--blue);font-weight:700;letter-spacing:.03em;text-align:center;">
+        TEAM — MIXED
+      </div>`;
+  }
+  return `
+    <div class="card">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+        <button class="btn btn-plus" onclick="manualRefresh()">🔄 Rafraîchir maintenant</button>
+      </div>
+      <label class="field-label">Nom de l'athlète en cours</label>
+      <div class="athlete-input">
+        <input type="text" id="athleteNameField" placeholder="Ex : Awa Diop" value="${escapeHtml(athleteNameInput)}" onfocus="formEditingActive=true" onblur="formEditingActive=false" oninput="athleteNameInput=this.value">
+        <button class="btn-new" onclick="launchNewFreestyleAthlete()">Nouvel athlète</button>
+      </div>
+      <div>
+        <label class="field-label">Division</label>
+        <select class="field-select" id="freestyleDivisionField" onfocus="formEditingActive=true" onblur="formEditingActive=false" onchange="freestyleDivisionInput=this.value; render();">${divisionOptionsHtml(division)}</select>
+      </div>
+      <div style="margin-top:12px;">
+        <label class="field-label">Class</label>
+        <select class="field-select" id="freestyleClassField" onfocus="formEditingActive=true" onblur="formEditingActive=false" onchange="freestyleClassInput=this.value; freestyleGenderInput=''; render();">${freestyleClassOptionsHtml(cls)}</select>
+      </div>
+      ${extraField}
+    </div>
+  `;
+}
+
+// Lance un nouvel athlète en mode freestyle : vérifie que Division/Class (et Gender si
+// Individual) sont bien renseignés, puis écrit dans la session Firestore existante.
+function launchNewFreestyleAthlete(){
+  const name = (athleteNameInput || '').trim();
+  if(!name){
+    alert("Merci d'indiquer le nom de l'athlète.");
+    return;
+  }
+  if(!freestyleDivisionInput){
+    alert("Merci de choisir une division (Under 17 / Over 17).");
+    return;
+  }
+  if(!freestyleClassInput){
+    alert("Merci de choisir une classe (Individual / Pair / Team).");
+    return;
+  }
+  if(freestyleClassInput === 'individual' && !freestyleGenderInput){
+    alert("Merci de choisir le genre (Male / Female) pour la classe Individual.");
+    return;
+  }
+  startNewFreestyleAthlete(name, freestyleDivisionInput, freestyleClassInput, freestyleClassInput === 'individual' ? freestyleGenderInput : '');
+  setAdminTab('judges');
+}
+
+// Écrit un nouvel athlète freestyle dans le document de session existant (même
+// architecture que startNewAthlete/startNewMatch) : on réutilise athleteCategory pour
+// le libellé composé (Division · Class · Gender) afin que tous les écrans déjà
+// branchés sur ce champ (bannière, historique, classement) restent compatibles, et on
+// ajoute division/freestyleClass/freestyleGender/freestyleComposition pour la logique.
+function startNewFreestyleAthlete(name, division, cls, gender){
+  if(!firebaseReady) return;
+  const newResetToken = (session.resetToken || 0) + 1;
+  const deletions = [1,2,3,4,5].map(i => notesRef().doc('j'+i).delete().catch(()=>{}));
+  const composition = cls === 'team' ? 'mixed' : '';
+  const categoryLabel = freestyleCategoryLabel(division, cls, gender);
+  Promise.all(deletions).then(() => {
+    sessionRef().set({
+      mode: 'freestyle',
+      phase: session.phase || '',
+      athleteName: name,
+      athleteCategory: categoryLabel,
+      athleteWeight: '',
+      athleteA: '',
+      athleteB: '',
+      athleteACategory: '',
+      athleteAWeight: '',
+      athleteBCategory: '',
+      athleteBWeight: '',
+      poomsaeR1: '',
+      poomsaeR2: '',
+      division: division || '',
+      freestyleClass: cls || '',
+      freestyleGender: gender || '',
+      freestyleComposition: composition,
+      resetToken: newResetToken,
+      final: null
+    }, {merge:false})
+      .catch(err => reportWriteError('startNewFreestyleAthlete', err));
+  });
 }
 
 /* =========================================================
