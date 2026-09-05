@@ -662,30 +662,31 @@ const firebaseConfig = {
 };
 
 /* =========================================================
-   ACCES SECURISE — identifiant + mot de passe (hash SHA-256)
-   Pour changer les identifiants : remplace AUTH_USERNAME, et régénère
-   AUTH_PASSWORD_HASH avec, dans la console du navigateur :
+   COMPTES — deux types de comptes, chacun avec son propre identifiant
+   et mot de passe (hash SHA-256) :
+   - Compte ADMIN (unique) : toutes les autorisations, y compris la
+     création/modification des comptes Juges (Espace Admin > Espace Juges).
+   - Comptes JUGE (jusqu'à 5) : créés par l'Admin, identifiant = nom du
+     juge, mot de passe défini par l'Admin. Autorisations restreintes :
+     uniquement saisir les notes, valider, et envoyer la note finale de
+     LEUR poste. Stockés dans Firestore (poomsae/judges), gérés depuis
+     l'Espace Admin, jamais en dur dans ce fichier.
+   Pour changer l'identifiant/mot de passe Admin : remplace ADMIN_USERNAME,
+   et régénère ADMIN_PASSWORD_HASH avec, dans la console du navigateur :
      crypto.subtle.digest('SHA-256', new TextEncoder().encode('TON_NOUVEAU_MDP'))
        .then(b => console.log(Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('')))
 ========================================================= */
-const AUTH_USERNAME = 'poomsae';
-const AUTH_PASSWORD_HASH = '85c236857ccb943c4ffbd9d3511d25014af83c2212475e546ac21f10c7381cca'; // = "DkTkd-2026"
-const AUTH_SESSION_KEY = 'poomsae_auth_ok';
-
-/* =========================================================
-   ACCES ADMIN — second mot de passe indépendant, requis en plus du
-   login général pour ouvrir la fenêtre Espace Admin (masque vraiment
-   les notes/contrôles aux juges, qui ne connaissent que le login général).
-   Même méthode que ci-dessus pour changer le mot de passe.
-========================================================= */
+const ADMIN_USERNAME = 'admin';
 const ADMIN_PASSWORD_HASH = 'bd93276bcfd6ab40cbd2e28c5defbe51665bbe12fd91fbd6aa07a39f14f5df4c'; // = "DkTkdAdmin"
 const ADMIN_SESSION_KEY = 'poomsae_admin_ok';
+const ROLE_SESSION_KEY = 'poomsae_role'; // 'admin' | 'judge'
+const JUDGE_NUM_SESSION_KEY = 'poomsae_judge_num'; // 1..5, uniquement pour un compte Juge
 
 /* =========================================================
-   ACCES PARAMETRES — troisième mot de passe indépendant, requis en plus du
-   login général et du mot de passe Espace Admin pour ouvrir l'onglet
-   "Paramètres" (diagnostic technique + test de connexion), qui expose des
-   détails internes sensibles (structure Firestore, identifiants d'appareils).
+   ACCES PARAMETRES — mot de passe indépendant supplémentaire, requis en plus
+   du compte Admin pour ouvrir l'onglet "Paramètres" (diagnostic technique +
+   test de connexion), qui expose des détails internes sensibles (structure
+   Firestore, identifiants d'appareils). Inaccessible aux comptes Juges.
    Même méthode que ci-dessus pour changer le mot de passe.
 ========================================================= */
 const SETTINGS_PASSWORD_HASH = '770ff68f310a3525ea24c9769b4f33640b9d7dd9473f49ef2382fef62a1aefcc'; // = "DkTkdSys"
@@ -731,23 +732,55 @@ async function attemptLogin(){
   loginError = '';
   loginChecking = true;
   render();
-  const userOk = loginUsernameInput.trim().toLowerCase() === AUTH_USERNAME.toLowerCase();
+  const enteredUser = loginUsernameInput.trim();
   const passHash = await sha256Hex(loginPasswordInput);
   loginChecking = false;
-  if(userOk && passHash === AUTH_PASSWORD_HASH){
-    sessionStorage.setItem(AUTH_SESSION_KEY, '1');
+
+  // Compte Admin — un seul compte, toutes les autorisations (y compris la gestion
+  // des comptes Juges depuis Espace Admin > Espace Juges).
+  if(enteredUser.toLowerCase() === ADMIN_USERNAME.toLowerCase() && passHash === ADMIN_PASSWORD_HASH){
+    currentRole = 'admin';
+    sessionStorage.setItem(ROLE_SESSION_KEY, 'admin');
+    sessionStorage.setItem(ADMIN_SESSION_KEY, '1'); // réutilisé par le reste du code (adminUnlocked)
+    adminUnlocked = true;
+    loginUsernameInput = '';
     loginPasswordInput = '';
     view = 'home';
-  } else {
-    loginError = 'Identifiant ou mot de passe incorrect.';
+    render();
+    return;
   }
+
+  // Comptes Juges — créés par l'Admin (identifiant = nom du juge). Autorisations
+  // restreintes : uniquement noter, valider et envoyer la note finale de LEUR poste.
+  if(!judgeAccountsLoaded){
+    loginError = 'Chargement des comptes en cours, réessaie dans un instant.';
+    render();
+    return;
+  }
+  for(let i=1;i<=5;i++){
+    const name = (judgeNames[i] || '').trim();
+    if(name && judgePasswordHashes[i] && name.toLowerCase() === enteredUser.toLowerCase() && passHash === judgePasswordHashes[i]){
+      currentRole = 'judge';
+      sessionStorage.setItem(ROLE_SESSION_KEY, 'judge');
+      sessionStorage.setItem(JUDGE_NUM_SESSION_KEY, String(i));
+      loginUsernameInput = '';
+      loginPasswordInput = '';
+      goJudge(i);
+      return;
+    }
+  }
+
+  loginError = 'Identifiant ou mot de passe incorrect.';
   render();
 }
 
 function logout(){
-  sessionStorage.removeItem(AUTH_SESSION_KEY);
+  sessionStorage.removeItem(ROLE_SESSION_KEY);
+  sessionStorage.removeItem(JUDGE_NUM_SESSION_KEY);
   sessionStorage.removeItem(ADMIN_SESSION_KEY);
   sessionStorage.removeItem(SETTINGS_SESSION_KEY);
+  currentRole = null;
+  currentJudge = null;
   adminUnlocked = false;
   settingsUnlocked = false;
   adminModalOpen = false;
@@ -775,7 +808,7 @@ function renderLogin(){
   return `
     <div class="card" style="max-width:360px;margin:50px auto 0;">
       <div class="section-title" style="margin-top:0;text-align:center;">🔒 Accès réservé</div>
-      <p style="font-size:13px;color:#6b7280;text-align:center;margin:0 0 18px;">Ligue de Dakar Taekwondo — Notation Poomsae</p>
+      <p style="font-size:13px;color:#6b7280;text-align:center;margin:0 0 18px;">Ligue de Dakar Taekwondo — Notation Poomsae<br>Compte Admin ou compte Juge (identifiant = ton nom)</p>
       ${loginError ? `<div class="config-warning" style="background:#fdeaea;color:#a12626;border-color:#f3b7bd;">${escapeHtml(loginError)}</div>` : ''}
       <label class="field-label">Identifiant</label>
       <input type="text" id="loginUsernameField" autocapitalize="off" value="${escapeHtml(loginUsernameInput)}"
@@ -797,7 +830,7 @@ function renderLogin(){
 let db = null;
 // UID Firebase Auth (anonyme) de cet appareil — permet de tracer QUI a écrit quoi,
 // et à l'admin de révoquer un appareil précis depuis la console Firebase
-// (Authentication > Users > menu ⋮ > Disable account), sans mot de passe partagé à changer.
+// (Authentication > Users > menu ⋮ > Disable account), sans mot de passe de compte à changer.
 let currentUid = null;
 let firebaseReady = false;
 let lastFirestoreError = null; // message affiché en clair à l'écran (au lieu de dépendre d'une alerte)
@@ -852,13 +885,16 @@ let judgeHydrated = false; // true seulement une fois les données réelles du s
 /* =========================================================
    ETAT GLOBAL
 ========================================================= */
-let view = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(AUTH_SESSION_KEY) === '1') ? 'home': 'login'; // login | home | judge | admin
+let currentRole = (typeof sessionStorage !== 'undefined') ? sessionStorage.getItem(ROLE_SESSION_KEY) : null; // 'admin' | 'judge' | null
+let view = (currentRole === 'admin') ? 'home' : (currentRole === 'judge' ? 'judge' : 'login'); // login | home | judge | admin
 // Fenêtre dédiée ouverte sur un 2e écran (voir openStageOnSecondScreen) : va directement
 // sur l'Écran Central sans repasser par le choix d'espace.
 if(typeof location !== 'undefined' && new URLSearchParams(location.search).get('stage') === '1' && view !== 'login'){
   view = 'stage';
 }
-let currentJudge = null; // 1..5
+let currentJudge = (currentRole === 'judge' && typeof sessionStorage !== 'undefined')
+  ? (parseInt(sessionStorage.getItem(JUDGE_NUM_SESSION_KEY), 10) || null)
+  : null; // 1..5
 
 // Etat de session partagé, reflet de Firestore session/current
 let session = {
@@ -1306,7 +1342,7 @@ function renderJudgeFreestyle(){
   const finalTotal = freestyleFinalTotal(fs);
 
   return `
-    <a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>
+    ${currentRole === 'admin' ? '<a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>' : ''}
     ${renderJudgeTestSignal()}
     ${athleteBanner}
 
@@ -1550,6 +1586,11 @@ function listenSession(){
 ========================================================= */
 let judgeNames = {1:'',2:'',3:'',4:'',5:''};
 let judgeNameInputs = {1:'',2:'',3:'',4:'',5:''};
+// Comptes Juges : hash SHA-256 du mot de passe de chaque juge (vide = compte non créé,
+// ce juge ne peut pas se connecter). Gérés depuis Espace Admin > Espace Juges.
+let judgePasswordHashes = {1:'',2:'',3:'',4:'',5:''};
+let judgePasswordInputs = {1:'',2:'',3:'',4:'',5:''}; // saisie admin en clair, jamais stockée telle quelle
+let judgeAccountsLoaded = false; // true dès la 1ère lecture Firestore de poomsae/judges
 
 function judgeLabel(n){
   return judgeNames[n] ? judgeNames[n] : ('Juge ' + n);
@@ -1558,36 +1599,55 @@ function judgeLabel(n){
 function listenJudges(){
   judgesRef().onSnapshot(doc => {
     const data = doc.exists ? doc.data() : {};
-    for(let i=1;i<=5;i++){ judgeNames[i] = data['j'+i] || ''; }
+    for(let i=1;i<=5;i++){
+      judgeNames[i] = data['j'+i] || '';
+      judgePasswordHashes[i] = data['j'+i+'pass'] || '';
+    }
+    judgeAccountsLoaded = true;
     scheduleLiveRender();
   }, err => {
     console.error('Erreur Firestore (onSnapshot judges) :', err.code, err.message);
   });
 }
 
-function saveJudgeNames(){
+// Enregistre nom + (optionnellement) mot de passe de chaque juge. Un champ mot de passe
+// laissé vide ne change pas le mot de passe existant — seul un nouveau mot de passe saisi
+// est haché puis envoyé. Le mot de passe en clair n'est jamais stocké ni envoyé tel quel.
+async function saveJudgeAccounts(){
   if(!firebaseReady) return;
   const payload = {};
-  for(let i=1;i<=5;i++){ payload['j'+i] = (judgeNameInputs[i] || '').trim(); }
+  for(let i=1;i<=5;i++){
+    payload['j'+i] = (judgeNameInputs[i] || '').trim();
+    const newPass = (judgePasswordInputs[i] || '').trim();
+    if(newPass){ payload['j'+i+'pass'] = await sha256Hex(newPass); }
+  }
   judgesRef().set(payload, {merge:true})
-    .catch(err => reportWriteError('saveJudgeNames', err));
+    .then(() => { for(let i=1;i<=5;i++){ judgePasswordInputs[i] = ''; } render(); })
+    .catch(err => reportWriteError('saveJudgeAccounts', err));
 }
 
 function renderJudgesEditCard(){
   let fields = '';
   for(let i=1;i<=5;i++){
+    const hasAccount = !!judgePasswordHashes[i];
     fields += `
       <div class="jn-item">
-        <label>Juge ${i}</label>
-        <input type="text" id="judgeNameField${i}" placeholder="Nom du juge ${i}" value="${escapeHtml(judgeNameInputs[i] || '')}" oninput="judgeNameInputs[${i}]=this.value">
+        <label>Juge ${i} — ${hasAccount ? '<span style="color:#1E8E5A;">✅ compte créé</span>' : '<span style="color:#C8102E;">⚠️ pas de mot de passe défini</span>'}</label>
+        <input type="text" id="judgeNameField${i}" placeholder="Nom du juge ${i} (= identifiant de connexion)" value="${escapeHtml(judgeNameInputs[i] || '')}" oninput="judgeNameInputs[${i}]=this.value">
+        <input type="password" id="judgePassField${i}" placeholder="${hasAccount ? 'Nouveau mot de passe (laisser vide pour ne pas changer)' : 'Définir le mot de passe du juge ' + i}" value="${escapeHtml(judgePasswordInputs[i] || '')}" oninput="judgePasswordInputs[${i}]=this.value" style="margin-top:6px;">
       </div>
     `;
   }
   return `
     <div class="card">
-      <div class="section-title" style="margin-top:0;">✏️ Éditer les juges</div>
+      <div class="section-title" style="margin-top:0;">✏️ Comptes des juges</div>
+      <p class="footer-note" style="text-align:left;margin-bottom:10px;">
+        Le nom saisi ici sert d'identifiant de connexion pour le juge (Espace de connexion
+        générale, avec le mot de passe défini ci-dessous). Chaque juge n'a accès qu'à sa
+        propre notation — jamais aux autres juges ni à l'Espace Admin.
+      </p>
       <div class="judges-edit-grid">${fields}</div>
-      <button class="btn-new" style="width:100%;" onclick="saveJudgeNames()">💾 Enregistrer les juges</button>
+      <button class="btn-new" style="width:100%;" onclick="saveJudgeAccounts()">💾 Enregistrer les comptes juges</button>
     </div>
   `;
 }
@@ -2056,6 +2116,12 @@ function writeFinal(finalObj){
    RENDU PRINCIPAL
 ========================================================= */
 function render(){
+  // Verrou de rôle : un compte Juge ne doit jamais pouvoir atterrir ailleurs que sur son
+  // propre écran de notation (même en cas de manipulation d'URL ou d'état) — un compte
+  // Juge n'a accès ni à l'accueil, ni à l'Espace Admin, ni aux autres juges.
+  if(currentRole === 'judge' && view !== 'judge' && view !== 'login'){
+    view = 'judge';
+  }
   const app = document.getElementById('app');
   const adminOverlayEl = document.getElementById('adminModalOverlay');
   app.classList.toggle('wrap-home', view === 'home');
@@ -2224,13 +2290,16 @@ function renderJudgesSpace(){
 }
 
 function goEspaceJuges(){
+  if(currentRole !== 'admin') return; // réservé à l'Admin (test/dépannage) — un compte Juge reste sur son propre poste
   view = 'judgesSpace';
   render();
 }
 function goEspaceAdmin(){
+  if(currentRole !== 'admin') return;
   openAdminPanel();
 }
 function goEspaceArbitre(){
+  if(currentRole !== 'admin') return;
   view = 'referee';
   render();
 }
@@ -2285,6 +2354,7 @@ let adminChecking = false;
 // Ouvre la fenêtre Espace Admin. Si le second mot de passe n'a pas encore été saisi
 // pendant cette session, affiche d'abord l'écran de verrouillage (voir renderAdminModal).
 function openAdminPanel(){
+  if(currentRole !== 'admin') return; // Espace Admin réservé au compte Admin
   adminModalOpen = true;
   if(adminUnlocked) hydrateAdminPanelFields();
   render();
@@ -2352,6 +2422,7 @@ function goAdmin(){
   openAdminPanel();
 }
 function goHome(){
+  if(currentRole !== 'admin') return; // un compte Juge n'a pas d'accueil à choisir
   view = 'home';
   render();
 }
@@ -2381,7 +2452,7 @@ function renderJudgeTestSignal(){
 function renderJudge(){
   if(!judgeHydrated){
     return `
-      <a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>
+      ${currentRole === 'admin' ? '<a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>' : ''}
       <div class="card" style="text-align:center;padding:44px 22px;">
         <div style="font-size:15px;color:#4b5563;font-weight:700;">🔄 Récupération de votre note existante…</div>
         <p style="font-size:13px;color:#9098a3;margin-top:10px;line-height:1.6;">
@@ -2405,7 +2476,7 @@ function renderJudge(){
 
   if(bothPassesValidated(judgeState)){
     return `
-      <a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>
+      ${currentRole === 'admin' ? '<a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>' : ''}
       ${renderJudgeTestSignal()}
       ${athleteBanner}
       <div class="validated-banner">
@@ -2441,7 +2512,7 @@ function renderJudge(){
   const presTotal = pass.puissance + pass.rythme + pass.expression;
 
   return `
-    <a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>
+    ${currentRole === 'admin' ? '<a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>' : ''}
     ${renderJudgeTestSignal()}
     ${athleteBanner}
     ${tabs}
@@ -2483,7 +2554,7 @@ function renderJudgeSideBySide(){
 
   if(bothSidePassesValidated()){
     return `
-      <a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>
+      ${currentRole === 'admin' ? '<a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>' : ''}
       ${renderJudgeTestSignal()}
       ${athleteBanner}
       <div class="validated-banner">
@@ -2529,7 +2600,7 @@ function renderJudgeSideBySide(){
   ];
 
   return `
-    <a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>
+    ${currentRole === 'admin' ? '<a class="backlink" onclick="goEspaceJuges()">← Changer de rôle</a>' : ''}
     ${renderJudgeTestSignal()}
     ${athleteBanner}
     ${sideTabs}
@@ -3027,8 +3098,8 @@ function renderAdminModal(){
   `;
 }
 
-// Écran de verrouillage affiché avant tout accès à l'Espace Admin, distinct du login
-// général: un juge qui connaît le mot de passe partagé n'a pas accès à cet écran.
+// Écran de verrouillage affiché avant tout accès à l'Espace Admin (garde-fou en plus du
+// compte Admin lui-même) : un compte Juge n'a de toute façon aucun moyen d'atteindre cet écran.
 function renderAdminGate(){
   return `
     <div style="max-width:320px;margin:10px auto 6px;">
@@ -3791,6 +3862,7 @@ function closeStage(){
 
 // Page dédiée "Écran central" (device séparé branché au projecteur).
 function goStage(){
+  if(currentRole !== 'admin') return; // écran de projection réservé à l'Admin
   view = 'stage';
   render();
 }
