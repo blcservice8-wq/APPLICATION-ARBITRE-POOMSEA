@@ -2,8 +2,19 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Notation Poomsae — Ligue de Dakar Taekwondo</title>
+
+<!-- PWA — installation sur écran d'accueil (Android : "Installer l'application" ;
+     iPhone : Safari > Partager > "Sur l'écran d'accueil") -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0B1F3A">
+<link rel="icon" href="icons/icon-192.png">
+<!-- iOS ne lit pas le manifest.json pour l'icône/le mode plein écran : balises dédiées -->
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Poomsae Dakar">
 <script>window.__sdkLoadError = null;</script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" onerror="window.__sdkLoadError='Impossible de charger firebase-app (réseau bloqué ou hors-ligne)';"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js" onerror="window.__sdkLoadError='Impossible de charger firebase-firestore (réseau bloqué ou hors-ligne)';"></script>
@@ -1652,36 +1663,18 @@ function renderJudgesEditCard(){
   `;
 }
 
-// Dès que les 5 juges ont validé leur note, calcule et envoie automatiquement la note
-// finale (et donc son affichage sur l'Écran Central, qui réagit déjà en direct à
-// session.final). Le drapeau finalCalcInFlight évite les doubles calculs pendant le
-// court délai avant que l'écriture ne revienne confirmer session.final ; le test sur
-// adminUnlocked évite que plusieurs appareils (juges, écran central) ne déclenchent
-// chacun leur propre calcul en même temps.
-let finalCalcInFlight = false;
-function maybeAutoCalculateFinal(){
-  if(!adminUnlocked || !firebaseReady) return;
-  if(session.final || finalCalcInFlight) return;
-  const scores = session.scores || {};
-  const allValidated = [1,2,3,4,5].every(i => scores['j'+i] && scores['j'+i].validated);
-  if(!allValidated) return;
-  finalCalcInFlight = true;
-  setTimeout(() => { finalCalcInFlight = false; }, 8000); // filet de sécurité si l'écriture échoue
-  if(session.mode === 'sideBySide'){
-    calculateFinalPick();
-  } else {
-    calculateFinal();
-  }
-}
-
 // Calcul + envoi automatique de la note finale dès que les 5 juges ont validé leur
 // note (plus besoin de cliquer "Calculer"). Se déclenche une seule fois par match
 // (repose sur resetToken) ; le résultat, une fois écrit en session.final, s'affiche
 // tout seul sur l'Écran Central via sa propre écoute Firestore. Vaut pour les 3 types
 // de compétition (Cut-Off, Élimination directe, Freestyle).
+// N'agit QUE sur l'appareil Admin (currentRole==='admin') : sans cette condition, chaque
+// appareil connecté (chaque juge, l'écran central...) détecterait indépendamment "5/5
+// validé" et écrirait chacun sa propre note finale + sa propre entrée d'historique, causant
+// des doublons dans l'historique et des numéros de match consommés en double.
 let autoCalcDoneForToken = null;
 function maybeAutoCalculateFinal(){
-  if(!firebaseReady || session.final) return;
+  if(currentRole !== 'admin' || !firebaseReady || session.final) return;
   if(autoCalcDoneForToken === session.resetToken) return;
   const scores = session.scores || {};
   const validatedCount = [1,2,3,4,5].filter(i => scores['j'+i] && scores['j'+i].validated).length;
@@ -4059,6 +4052,17 @@ function escapeHtml(str){
 
 initFirebase();
 render();
+
+// Enregistrement du service worker — rend l'app installable (PWA) sur Android et iPhone.
+// Échoue silencieusement si le fichier est ouvert en local (file://) ou hors GitHub Pages/HTTPS,
+// sans jamais bloquer le reste de l'application.
+if('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js').catch(err => {
+      console.warn('Service worker non enregistré :', err);
+    });
+  });
+}
 </script>
 </body>
 </html>
